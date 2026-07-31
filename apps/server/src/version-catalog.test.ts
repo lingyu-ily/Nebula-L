@@ -120,4 +120,34 @@ describe('version catalog', () => {
 
         await expect(service.getMinecraftVersions()).rejects.toBeInstanceOf(VersionCatalogUnavailableError)
     })
+
+    it('shares an in-flight upstream request for the same cache key', async () => {
+        let requests = 0
+        let releaseRequest = (): void => undefined
+        const requestGate = new Promise<void>(resolve => {
+            releaseRequest = resolve
+        })
+        const fetcher: CatalogFetch = async url => {
+            requests += 1
+            await requestGate
+            if (url.includes('maven-metadata.xml')) {
+                return new Response('<metadata><versioning><versions><version>1.20.1-47.4.0</version></versions></versioning></metadata>')
+            }
+            return jsonResponse({
+                promos: {
+                    '1.20.1-recommended': '47.4.0',
+                    '1.20.1-latest': '47.4.0'
+                }
+            })
+        }
+        const service = new VersionCatalogService(fetcher)
+        const first = service.getLoaderVersions('forge', '1.20.1')
+        const second = service.getLoaderVersions('forge', '1.20.1')
+
+        await Promise.resolve()
+        expect(requests).toBe(2)
+        releaseRequest()
+        await expect(Promise.all([first, second])).resolves.toHaveLength(2)
+        expect(requests).toBe(2)
+    })
 })

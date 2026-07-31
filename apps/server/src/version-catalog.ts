@@ -68,6 +68,7 @@ export interface VersionCatalogProvider {
 
 export class VersionCatalogService implements VersionCatalogProvider {
     private readonly cache = new Map<string, CacheEntry<unknown>>()
+    private readonly inFlight = new Map<string, Promise<unknown>>()
 
     constructor(
         private readonly fetcher: CatalogFetch = async (url, init) => fetch(url, init),
@@ -174,8 +175,18 @@ export class VersionCatalogService implements VersionCatalogProvider {
         if (existing && age <= FRESH_CACHE_MS) {
             return { value: existing.value, stale: false }
         }
+        let pending = this.inFlight.get(key) as Promise<T> | undefined
         try {
-            const value = await loader()
+            if (!pending) {
+                pending = loader()
+                    .finally(() => {
+                        if (this.inFlight.get(key) === pending) {
+                            this.inFlight.delete(key)
+                        }
+                    })
+                this.inFlight.set(key, pending)
+            }
+            const value = await pending
             this.cache.set(key, { value, fetchedAt: this.now() })
             return { value, stale: false }
         } catch (error) {

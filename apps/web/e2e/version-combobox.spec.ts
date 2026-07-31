@@ -23,8 +23,14 @@ async function fulfillJson(route: Route, value: unknown, status = 200): Promise<
     })
 }
 
-async function mockProjectPage(page: Page, catalogAvailable = true): Promise<unknown[]> {
+interface MockState {
+    savedServers: unknown[]
+    loaderRequests: string[]
+}
+
+async function mockProjectPage(page: Page, catalogAvailable = true): Promise<MockState> {
     const savedServers: unknown[] = []
+    const loaderRequests: string[] = []
     await page.addInitScript(() => localStorage.setItem('i18nextLng', 'en'))
     await page.route('**/api/v1/**', async route => {
         const request = route.request()
@@ -60,6 +66,7 @@ async function mockProjectPage(page: Page, catalogAvailable = true): Promise<unk
                 }, 503)
             }
         } else if (url.pathname === '/api/v1/version-catalog/loaders') {
+            loaderRequests.push(url.searchParams.get('minecraftVersion') ?? '')
             if (catalogAvailable) {
                 await fulfillJson(route, {
                     loader: url.searchParams.get('loader'),
@@ -87,11 +94,11 @@ async function mockProjectPage(page: Page, catalogAvailable = true): Promise<unk
             await fulfillJson(route, { title: 'Not Found', status: 404 }, 404)
         }
     })
-    return savedServers
+    return { savedServers, loaderRequests }
 }
 
 test('selects suggestions and accepts custom Minecraft and loader versions', async ({ page }) => {
-    const savedServers = await mockProjectPage(page)
+    const { savedServers } = await mockProjectPage(page)
     await page.goto('/projects/project-1')
     await page.getByRole('button', { name: 'Add server' }).click()
 
@@ -136,4 +143,20 @@ test('keeps manual entry available when catalogs are offline', async ({ page }) 
     await expect(page.getByText('Suggestions unavailable. Enter a version manually.')).toHaveCount(2)
     await expect(loaderVersion).toBeEnabled()
     await loaderVersion.fill('0.99-custom')
+})
+
+test('waits for Minecraft input and queries only the debounced version', async ({ page }) => {
+    const { loaderRequests } = await mockProjectPage(page)
+    await page.goto('/projects/project-1')
+    await page.getByRole('button', { name: 'Add server' }).click()
+
+    const serverForm = page.locator('form.form-grid.inset').first()
+    await serverForm.locator('select[name="loader"]').selectOption('fabric')
+    await expect(page.getByText('Choose or enter a Minecraft version first.')).toBeVisible()
+    await page.waitForTimeout(500)
+    expect(loaderRequests).toHaveLength(0)
+
+    await serverForm.locator('input[name="minecraftVersion"]').pressSequentially('1.20.1', { delay: 50 })
+    await expect.poll(() => loaderRequests).toEqual(['1.20.1'])
+    await expect(page.getByText('Loading version suggestions…')).toHaveCount(0)
 })

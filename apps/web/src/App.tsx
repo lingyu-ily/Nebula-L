@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Link, NavLink, Navigate, Route, Routes, useNavigate, useParams } from './router.js'
@@ -37,6 +37,15 @@ function useSession(): ReturnType<typeof useQuery<AuthResponse, Error>> {
 function ErrorNotice({ error }: { error: unknown }): ReactNode {
     if (!error) return null
     return <div className="notice error" role="alert">{error instanceof Error ? error.message : String(error)}</div>
+}
+
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+    const [debouncedValue, setDebouncedValue] = useState(value)
+    useEffect(() => {
+        const timer = window.setTimeout(() => setDebouncedValue(value), delayMs)
+        return (): void => window.clearTimeout(timer)
+    }, [delayMs, value])
+    return debouncedValue
 }
 
 function LoginPage(): ReactNode {
@@ -227,25 +236,30 @@ function ServerForm({ project, server, onDone }: { project: Project, server?: Ma
     const [loader, setLoader] = useState<'none' | VersionCatalogLoader>(initialLoader)
     const [loaderVersion, setLoaderVersion] = useState(server?.forgeVersion ?? server?.fabricVersion ?? '')
     const selectedLoader = loader === 'none' ? null : loader
+    const normalizedMinecraftVersion = minecraftVersion.trim()
+    const debouncedMinecraftVersion = useDebouncedValue(normalizedMinecraftVersion, 400)
+    const canLoadLoaderVersions = selectedLoader != null
+        && normalizedMinecraftVersion.length > 0
+        && normalizedMinecraftVersion === debouncedMinecraftVersion
     const minecraftCatalog = useQuery<MinecraftCatalogResponse, Error>({
         queryKey: ['version-catalog', 'minecraft'],
-        queryFn: () => api('/api/v1/version-catalog/minecraft'),
+        queryFn: ({ signal }) => api('/api/v1/version-catalog/minecraft', { signal }),
         retry: false,
         staleTime: 15 * 60 * 1_000
     })
     const loaderCatalog = useQuery<LoaderCatalogResponse, Error>({
-        queryKey: ['version-catalog', 'loader', selectedLoader, minecraftVersion.trim()],
-        queryFn: () => {
+        queryKey: ['version-catalog', 'loader', selectedLoader, normalizedMinecraftVersion],
+        queryFn: ({ signal }) => {
             if (!selectedLoader) {
                 throw new Error('A loader must be selected')
             }
             const query = new URLSearchParams({
                 loader: selectedLoader,
-                minecraftVersion: minecraftVersion.trim()
+                minecraftVersion: normalizedMinecraftVersion
             })
-            return api(`/api/v1/version-catalog/loaders?${query}`)
+            return api(`/api/v1/version-catalog/loaders?${query}`, { signal })
         },
-        enabled: selectedLoader != null && minecraftVersion.trim().length > 0,
+        enabled: canLoadLoaderVersions,
         retry: false,
         staleTime: 15 * 60 * 1_000
     })
@@ -326,11 +340,11 @@ function ServerForm({ project, server, onDone }: { project: Project, server?: Ma
                 )}
             </datalist>
             <small className={minecraftCatalog.isError ? 'field-hint warning' : 'field-hint'}>
-                {minecraftCatalog.isPending
+                {minecraftCatalog.fetchStatus === 'fetching' && !minecraftCatalog.data
                     ? t('versionsLoading')
                     : minecraftCatalog.isError
                         ? t('versionsUnavailable')
-                        : minecraftCatalog.data.stale
+                        : minecraftCatalog.data?.stale
                             ? t('versionsStale')
                             : t('manualVersionHint')}
             </small>
@@ -373,15 +387,17 @@ function ServerForm({ project, server, onDone }: { project: Project, server?: Ma
                 })}
             </datalist>
             {selectedLoader && <small className={loaderCatalog.isError ? 'field-hint warning' : 'field-hint'}>
-                {loaderCatalog.isPending
-                    ? t('versionsLoading')
-                    : loaderCatalog.isError
-                        ? t('versionsUnavailable')
-                        : loaderCatalog.data.stale
-                            ? t('versionsStale')
-                            : loaderCatalog.data.versions.length === 0
-                                ? t('noCompatibleVersions')
-                                : t('manualVersionHint')}
+                {normalizedMinecraftVersion.length === 0
+                    ? t('selectMinecraftFirst')
+                    : loaderCatalog.fetchStatus === 'fetching' && !loaderCatalog.data
+                        ? t('versionsLoading')
+                        : loaderCatalog.isError
+                            ? t('versionsUnavailable')
+                            : loaderCatalog.data?.stale
+                                ? t('versionsStale')
+                                : loaderCatalog.data && loaderCatalog.data.versions.length === 0
+                                    ? t('noCompatibleVersions')
+                                    : t('manualVersionHint')}
             </small>}
         </label>
         <label>{t('order')}<input name="sortOrder" type="number" min="0" defaultValue={server?.sortOrder ?? 0} /></label>
