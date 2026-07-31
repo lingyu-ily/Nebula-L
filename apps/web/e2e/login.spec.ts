@@ -45,3 +45,57 @@ test('keeps every login control reachable in an extremely short viewport', async
     await submit.scrollIntoViewIfNeeded()
     await expect(submit).toBeVisible()
 })
+
+test('returns to the sign-in page after logout', async ({ page }) => {
+    let loggedIn = true
+    await page.addInitScript(() => localStorage.setItem('i18nextLng', 'en'))
+    await page.route('**/api/v1/**', async route => {
+        const request = route.request()
+        const url = new URL(request.url())
+        if (url.pathname === '/api/v1/auth/me') {
+            if (!loggedIn) {
+                await route.fulfill({
+                    status: 401,
+                    contentType: 'application/problem+json',
+                    body: JSON.stringify({ title: 'Unauthorized', status: 401 })
+                })
+                return
+            }
+            await route.fulfill({
+                status: 200,
+                contentType: 'application/json',
+                body: JSON.stringify({
+                    user: {
+                        id: 'editor-1',
+                        username: 'editor',
+                        role: 'EDITOR',
+                        status: 'ACTIVE',
+                        mustChangePassword: false
+                    },
+                    csrfToken: 'csrf-token'
+                })
+            })
+        } else if (url.pathname === '/api/v1/auth/logout' && request.method() === 'POST') {
+            loggedIn = false
+            await route.fulfill({ status: 204 })
+        } else if (url.pathname === '/api/v1/projects') {
+            await route.fulfill({
+                status: 200,
+                contentType: 'application/json',
+                body: JSON.stringify({ items: [] })
+            })
+        } else {
+            await route.fulfill({
+                status: 404,
+                contentType: 'application/problem+json',
+                body: JSON.stringify({ title: 'Not Found', status: 404 })
+            })
+        }
+    })
+
+    await page.goto('/projects')
+    await page.getByRole('button', { name: 'Sign out' }).click()
+
+    await expect(page).toHaveURL(/\/$/)
+    await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
+})

@@ -1,7 +1,7 @@
 import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Link, NavLink, Navigate, Route, Routes, useNavigate, useParams } from './router.js'
+import { Link, NavLink, Navigate, Route, Routes, useParams } from './router.js'
 import type { ApiUser } from '@nebula/shared'
 import {
     api,
@@ -109,12 +109,11 @@ function ChangePasswordPage({ user }: { user: ApiUser }): ReactNode {
 function Shell({ user, children }: { user: ApiUser, children: ReactNode }): ReactNode {
     const { t, i18n } = useTranslation()
     const queryClient = useQueryClient()
-    const navigate = useNavigate()
     const logout = useMutation({
         mutationFn: () => api('/api/v1/auth/logout', { method: 'POST' }),
         onSuccess: () => {
             queryClient.clear()
-            void navigate('/')
+            window.location.replace('/')
         }
     })
     const toggleLanguage = (): void => {
@@ -132,7 +131,7 @@ function Shell({ user, children }: { user: ApiUser, children: ReactNode }): Reac
                 <span className={`role role-${user.role.toLowerCase()}`}>{user.role}</span>
                 <strong>{user.username}</strong>
                 <button className="text-button" onClick={toggleLanguage}>{t('language')}</button>
-                <button className="text-button" onClick={() => logout.mutate()}>{t('logout')}</button>
+                <button className="text-button" disabled={logout.isPending} onClick={() => logout.mutate()}>{t('logout')}</button>
             </div>
         </aside>
         <main className="content">{children}</main>
