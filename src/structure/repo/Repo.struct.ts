@@ -1,5 +1,5 @@
 import { mkdirs } from 'fs-extra/esm'
-import { join } from 'path'
+import { join, resolve } from 'path'
 import { BaseFileStructure } from '../BaseFileStructure.js'
 import { LibRepoStructure } from './LibRepo.struct.js'
 import { VersionRepoStructure } from './VersionRepo.struct.js'
@@ -47,6 +47,9 @@ export class RepoStructure extends BaseFileStructure {
     }
 
     public getCacheDirectory(): string {
+        if (process.env.NEBULA_GENERATOR_CACHE_DIR) {
+            return resolve(process.env.NEBULA_GENERATOR_CACHE_DIR)
+        }
         return join(this.absoluteRoot, 'cache')
     }
 

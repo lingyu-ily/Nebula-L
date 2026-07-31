@@ -1,0 +1,59 @@
+services:
+  mariadb:
+    image: mariadb:10.11
+    environment:
+      MARIADB_DATABASE: nebula
+      MARIADB_USER: nebula
+      MARIADB_PASSWORD: nebula_test_password
+      MARIADB_ROOT_PASSWORD: nebula_root_test_password
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    environment:
+      RUSTFS_ACCESS_KEY: nebula_test
+      RUSTFS_SECRET_KEY: nebula_test_secret
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_VOLUMES: /data
+    volumes:
+      - rustfs-test-data:/data
+
+  rustfs-init:
+    image: minio/mc:latest
+    depends_on:
+      rustfs:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        until mc alias set local http://rustfs:9000 nebula_test nebula_test_secret; do sleep 2; done &&
+        mc mb --ignore-existing local/nebula &&
+        mc anonymous set download local/nebula/public
+
+  app:
+    build: .
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      rustfs-init:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: mysql://nebula:nebula_test_password@mariadb:3306/nebula
+      COOKIE_SECRET: test-cookie-secret-with-at-least-thirty-two-characters
+      COOKIE_SECURE: "false"
+      APP_BASE_URL: http://localhost:3000
+      RUSTFS_ENDPOINT: http://rustfs:9000
+      RUSTFS_REGION: us-east-1
+      RUSTFS_BUCKET: nebula
+      RUSTFS_ACCESS_KEY_ID: nebula_test
+      RUSTFS_SECRET_ACCESS_KEY: nebula_test_secret
+      RUSTFS_PUBLIC_BASE_URL: http://localhost:9000/nebula
+    ports:
+      - "3000:3000"
+
+volumes:
+  rustfs-test-data:

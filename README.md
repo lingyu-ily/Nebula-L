@@ -2,6 +2,80 @@
 
 Generate a distribution.json for Helios. Documentation on this format can be found [here][distro.md].
 
+## Nebula Console
+
+Nebula now includes a Docker-based web console for managing multiple Helios distributions. Metadata lives in external MariaDB; uploaded source files and immutable releases live in external RustFS. The application provides local accounts, Admin/Editor/Auditor roles, background publishing, rollback, release retention, and append-only audit records.
+
+### Production requirements
+
+* Docker 20.10+
+* External MariaDB 10.11+
+* External RustFS bucket with S3 path-style access
+* HTTPS reverse proxy for the application
+* Public read access or CDN access for the RustFS `public/*` prefix only
+
+Copy `.env.example` to `.env`, fill every secret and endpoint, then start the application.
+
+```bash
+docker compose build
+docker compose run --rm app npm run admin:create
+docker compose up -d
+```
+
+The first administrator must change the bootstrap password after signing in. Database migrations run under a MariaDB advisory lock during startup. API documentation is available at `/api/docs`; health endpoints are `/health/live` and `/health/ready`.
+
+### Unraid
+
+Unraid can run Nebula Console as a single application container while reusing existing MariaDB, RustFS, and Nginx containers. The native template exposes every runtime setting in the **Add Container** form and pulls the public image from `ghcr.io/lingyu-ily/nebula-l:latest`.
+
+Install the template on Unraid:
+
+```bash
+curl --fail --location \
+  --output /boot/config/plugins/dockerMan/templates-user/my-nebula-console.xml \
+  https://raw.githubusercontent.com/lingyu-ily/Nebula-L/master/unraid/nebula-console.xml
+```
+
+Open **Docker → Add Container**, choose **Nebula-Console**, select the custom Docker network shared by MariaDB, RustFS, and Nginx, then fill every required variable. Full field descriptions, first-Admin setup, GHCR visibility, and verification steps are in [`unraid/README.md`](unraid/README.md).
+
+The Unraid port mapping replaces `NEBULA_HTTP_PORT`; that variable is only used when Compose interpolates `compose.yml`. The `.env` and Compose deployment remain supported.
+
+Published objects use this layout:
+
+```text
+public/{distribution-slug}/distribution.json
+public/{distribution-slug}/releases/{release-id}/...
+private/uploads/{project-id}/...
+```
+
+The stable `distribution.json` is replaced only after every immutable release object has uploaded and passed size/SHA-256 verification. Ten successful releases are retained. Release metadata and audit records remain in MariaDB after old objects are cleaned.
+
+Nebula writes `no-cache, must-revalidate` to the stable object and `public, max-age=31536000, immutable` to release objects. Confirm that the deployed RustFS version or CDN forwards the stored S3 `Cache-Control` value on anonymous responses; if it does not, apply equivalent path rules at the CDN/reverse-proxy layer.
+
+### Local development
+
+```bash
+npm install
+npm run build
+npm run lint
+npm run test:unit
+npm run test:e2e
+```
+
+Run `npm run dev:server` and `npm run dev:web` in separate terminals. Vite proxies API calls to port 3000. `compose.test.yml` supplies disposable MariaDB and RustFS services for integration and Docker smoke testing.
+
+The Docker smoke workflow is:
+
+```bash
+docker compose -p nebula-smoke -f compose.test.yml up -d --build
+docker compose -p nebula-smoke -f compose.test.yml exec -T -e NEBULA_ADMIN_PASSWORD="replace-with-a-test-password" app npm run admin:create
+docker compose -p nebula-smoke -f compose.test.yml down -v
+```
+
+### Legacy CLI
+
+File-based CLI commands remain available through `npm run cli -- <COMMAND>`. They continue using `ROOT`, `BASE_URL`, and `JAVA_EXECUTABLE`; their files are independent from web-console data stored in MariaDB/RustFS.
+
 ## Requirements
 
 * Node.js 22

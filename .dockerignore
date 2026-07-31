@@ -1,0 +1,13 @@
+.git
+.github
+.vscode
+node_modules
+dist
+apps/*/dist
+packages/*/dist
+coverage
+playwright-report
+test-results
+.env
+*.log
+*.tsbuildinfo

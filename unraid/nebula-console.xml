@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Container version="2">
+  <Name>Nebula-Console</Name>
+  <Repository>ghcr.io/lingyu-ily/nebula-l:latest</Repository>
+  <Registry>https://github.com/lingyu-ily/Nebula-L/pkgs/container/nebula-l</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/lingyu-ily/Nebula-L/issues</Support>
+  <Project>https://github.com/lingyu-ily/Nebula-L</Project>
+  <Overview>Nebula Console manages Helios distributions with external MariaDB and RustFS services. Use a custom Docker network shared with MariaDB, RustFS, and the HTTPS reverse proxy whenever possible.</Overview>
+  <Category>Tools:</Category>
+  <WebUI>http://[IP]:[PORT:3000]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/lingyu-ily/Nebula-L/master/unraid/nebula-console.xml</TemplateURL>
+  <Icon/>
+  <ExtraParams>--init --read-only --security-opt=no-new-privileges --tmpfs /tmp:rw,size=4g,mode=1777</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+
+  <Config Name="Web UI Port" Target="3000" Default="3000" Mode="tcp" Description="Nebula Console HTTP port. Point your HTTPS reverse proxy at this port." Type="Port" Display="always" Required="true" Mask="false">3000</Config>
+  <Config Name="Forge Cache" Target="/var/lib/nebula/cache" Default="/mnt/user/appdata/nebula/cache" Mode="rw" Description="Persistent Forge installer cache. Prefer SSD-backed appdata." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/nebula/cache</Config>
+
+  <Config Name="Application Base URL" Target="APP_BASE_URL" Default="https://nebula.example.com" Mode="" Description="Exact public HTTPS URL used to open Nebula Console, without a trailing slash." Type="Variable" Display="always" Required="true" Mask="false">https://nebula.example.com</Config>
+  <Config Name="MariaDB Connection URL" Target="DATABASE_URL" Default="" Mode="" Description="mysql://user:URL_ENCODED_PASSWORD@mariadb:3306/nebula. Do not use localhost for another container." Type="Variable" Display="always" Required="true" Mask="true"></Config>
+  <Config Name="Cookie Secret" Target="COOKIE_SECRET" Default="" Mode="" Description="At least 32 random characters. Generate with: openssl rand -hex 32" Type="Variable" Display="always" Required="true" Mask="true"></Config>
+
+  <Config Name="RustFS S3 Endpoint" Target="RUSTFS_ENDPOINT" Default="http://rustfs:9000" Mode="" Description="Internal RustFS S3 API URL. This is not the RustFS console port." Type="Variable" Display="always" Required="true" Mask="false">http://rustfs:9000</Config>
+  <Config Name="RustFS Bucket" Target="RUSTFS_BUCKET" Default="nebula" Mode="" Description="Existing bucket that grants the App read/write access to private/* and public/*." Type="Variable" Display="always" Required="true" Mask="false">nebula</Config>
+  <Config Name="RustFS Access Key ID" Target="RUSTFS_ACCESS_KEY_ID" Default="" Mode="" Description="S3 access key used by Nebula Console." Type="Variable" Display="always" Required="true" Mask="false"></Config>
+  <Config Name="RustFS Secret Access Key" Target="RUSTFS_SECRET_ACCESS_KEY" Default="" Mode="" Description="S3 secret key used by Nebula Console." Type="Variable" Display="always" Required="true" Mask="true"></Config>
+  <Config Name="RustFS Public Base URL" Target="RUSTFS_PUBLIC_BASE_URL" Default="https://files.example.com/nebula" Mode="" Description="Public or CDN base URL for the bucket. Helios downloads public/* objects from this URL." Type="Variable" Display="always" Required="true" Mask="false">https://files.example.com/nebula</Config>
+
+  <Config Name="Trust Reverse Proxy" Target="TRUST_PROXY" Default="true" Mode="" Description="Keep true when Nginx, SWAG, or Traefik terminates HTTPS." Type="Variable" Display="advanced" Required="true" Mask="false">true</Config>
+  <Config Name="Secure Cookies" Target="COOKIE_SECURE" Default="true" Mode="" Description="Keep true for HTTPS. Use false only for an HTTP-only LAN test." Type="Variable" Display="advanced" Required="true" Mask="false">true</Config>
+  <Config Name="RustFS Region" Target="RUSTFS_REGION" Default="us-east-1" Mode="" Description="S3 signing region configured for RustFS." Type="Variable" Display="advanced" Required="true" Mask="false">us-east-1</Config>
+  <Config Name="CurseForge API Key" Target="CURSEFORGE_API_KEY" Default="" Mode="" Description="Optional. Required only for CurseForge ZIP imports." Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
+  <Config Name="Maximum Upload Bytes" Target="MAX_UPLOAD_BYTES" Default="2147483648" Mode="" Description="Maximum upload size in bytes. The reverse proxy limit must be at least this large." Type="Variable" Display="advanced" Required="true" Mask="false">2147483648</Config>
+  <Config Name="Enable Background Worker" Target="WORKER_ENABLED" Default="true" Mode="" Description="Runs publish and CurseForge import jobs in this container." Type="Variable" Display="advanced" Required="true" Mask="false">true</Config>
+  <Config Name="Worker Poll Milliseconds" Target="WORKER_POLL_MS" Default="2000" Mode="" Description="Database queue polling interval. Minimum 250 ms." Type="Variable" Display="advanced" Required="true" Mask="false">2000</Config>
+
+  <Config Name="Node Environment" Target="NODE_ENV" Default="production" Mode="" Description="Fixed production runtime mode." Type="Variable" Display="advanced-hide" Required="true" Mask="false">production</Config>
+  <Config Name="Listen Host" Target="HOST" Default="0.0.0.0" Mode="" Description="Fixed container listen address." Type="Variable" Display="advanced-hide" Required="true" Mask="false">0.0.0.0</Config>
+  <Config Name="Listen Port" Target="PORT" Default="3000" Mode="" Description="Fixed internal HTTP port." Type="Variable" Display="advanced-hide" Required="true" Mask="false">3000</Config>
+  <Config Name="Java Executable" Target="JAVA_EXECUTABLE" Default="/usr/bin/java" Mode="" Description="Java 17 executable included in the image." Type="Variable" Display="advanced-hide" Required="true" Mask="false">/usr/bin/java</Config>
+</Container>

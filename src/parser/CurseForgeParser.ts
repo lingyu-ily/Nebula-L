@@ -61,7 +61,7 @@ export class CurseForgeParser {
         prefixUrl: 'https://api.curseforge.com/v1',
         responseType: 'json',
         headers: {
-            'X-API-KEY': '$2a$10$JL4kTO/N/oXIM6o3uTYC3eLxGrOI4BIAqpX4vAFeIPoXiTtagidkK'
+            'X-API-KEY': process.env.CURSEFORGE_API_KEY ?? ''
         }
     })
 
@@ -86,8 +86,12 @@ export class CurseForgeParser {
         return JSON.parse((await zip.entryData('manifest.json')).toString('utf8')) as CurseForgeManifest
     }
 
-    public async enrichServer(createServerResult: CreateServerResult, manifest: CurseForgeManifest): Promise<void> {
+    public async enrichServer(createServerResult: CreateServerResult, manifest: CurseForgeManifest): Promise<CurseForgeManualFile[]> {
         log.debug('Enriching server.')
+
+        if (!process.env.CURSEFORGE_API_KEY) {
+            throw new Error('CURSEFORGE_API_KEY is required for CurseForge imports.')
+        }
 
         // Extract overrides
         const zip = new StreamZip.async({ file: this.zipPath })
@@ -104,7 +108,7 @@ export class CurseForgeParser {
             const requiredPath = resolve(createServerResult.modContainer, ToggleableNamespace.REQUIRED)
             const optionalPath = resolve(createServerResult.modContainer, ToggleableNamespace.OPTIONAL_ON)
 
-            const disallowedFiles: { name: string, fileName: string, url: string }[] = []
+            const disallowedFiles: CurseForgeManualFile[] = []
 
             // Download mods
             for(const file of manifest.files) {
@@ -165,7 +169,16 @@ export class CurseForgeParser {
                 log.error('============================================')
             }
 
+            return disallowedFiles
+
         }
+        return []
     }
 
+}
+
+export interface CurseForgeManualFile {
+    name: string
+    fileName: string
+    url: string
 }

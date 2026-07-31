@@ -1,0 +1,39 @@
+{
+  "name": "@nebula/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "db:migrate": "node dist/cli.js db:migrate",
+    "admin:create": "node dist/cli.js admin:create",
+    "test": "vitest run src"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1098.0",
+    "@aws-sdk/lib-storage": "^3.1098.0",
+    "@fastify/cookie": "^11.1.2",
+    "@fastify/multipart": "^10.1.0",
+    "@fastify/rate-limit": "^11.2.0",
+    "@fastify/static": "^10.1.2",
+    "@fastify/swagger": "^9.8.1",
+    "@fastify/swagger-ui": "^6.1.1",
+    "@nebula/shared": "*",
+    "@node-rs/argon2": "^2.0.2",
+    "dotenv": "^17.2.3",
+    "drizzle-orm": "^0.45.2",
+    "fastify": "^5.11.0",
+    "mysql2": "^3.23.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.23.1",
+    "typescript": "~5.9.3",
+    "vitest": "^4.1.10"
+  }
+}

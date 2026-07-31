@@ -4,9 +4,14 @@
     "module": "Node16",
     "lib": ["ES2024", "DOM"],
     "sourceMap": true,
+    "declaration": true,
+    "declarationMap": true,
+    "rootDir": "src",
     "outDir": "dist",
     "strict": true,
     "moduleResolution": "node16",
     "esModuleInterop": true
-  }
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "apps", "packages"]
 }

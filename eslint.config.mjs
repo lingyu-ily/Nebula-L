@@ -7,7 +7,7 @@ import stylistic from '@stylistic/eslint-plugin';
 
 export default defineConfig(
   {
-    ignores: ['**/dist/**', 'node_modules', 'eslint.config.mjs'],
+    ignores: ['**/dist/**', 'node_modules', 'eslint.config.mjs', '**/vite.config.*', '**/drizzle.config.ts', '**/playwright.config.ts'],
   },
   eslint.configs.recommended,
   tseslint.configs.recommendedTypeChecked,
@@ -53,5 +53,11 @@ export default defineConfig(
       '@typescript-eslint/require-await': 'off',                    // This is literally broken
       '@typescript-eslint/restrict-template-expressions': 'off'     // We make use of template expressions on objects
     },
+  },
+  {
+    files: ['apps/web/src/**/*.ts', 'apps/web/src/**/*.tsx'],
+    rules: {
+      '@typescript-eslint/no-base-to-string': 'off'
+    }
   }
 );
