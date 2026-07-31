@@ -1,7 +1,7 @@
 import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Link, NavLink, Navigate, Route, Routes, useParams } from './router.js'
+import { Link, NavLink, Navigate, Route, Routes, useNavigate, useParams } from './router.js'
 import type { ApiUser } from '@nebula/shared'
 import {
     api,
@@ -297,15 +297,34 @@ function ProjectPage({ user }: { user: ApiUser }): ReactNode {
     const { projectId = '' } = useParams()
     const { t } = useTranslation()
     const queryClient = useQueryClient()
+    const navigate = useNavigate()
     const detail = useQuery({ queryKey: ['project', projectId], queryFn: () => api<ProjectDetail>(`/api/v1/projects/${projectId}`) })
     const publish = useMutation({
         mutationFn: (revision: number) => api<{ jobId: string }>(`/api/v1/projects/${projectId}/publish`, { method: 'POST', ...jsonBody({ revision }) }),
         onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['jobs', projectId] })
     })
+    const disableProject = useMutation({
+        mutationFn: (revision: number) => api(`/api/v1/projects/${projectId}`, { method: 'DELETE', ...jsonBody({ revision }) }),
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: ['projects'] })
+            queryClient.removeQueries({ queryKey: ['project', projectId], exact: true })
+            navigate('/projects', { replace: true })
+        }
+    })
     if (detail.isLoading) return <div className="loading">NEBULA</div>
     if (!detail.data) return <ErrorNotice error={detail.error} />
     const canEdit = user.role === 'ADMIN' || user.role === 'EDITOR'
     const project = detail.data.project
+    const confirmDisableProject = (): void => {
+        if (!window.confirm(t('confirmDisableProject', { name: project.name }))) return
+        const enteredName = window.prompt(t('disableProjectNamePrompt', { name: project.name }))
+        if (enteredName == null) return
+        if (enteredName !== project.name) {
+            window.alert(t('disableProjectNameMismatch'))
+            return
+        }
+        disableProject.mutate(project.draftRevision)
+    }
     return <>
         <header className="page-header project-header"><div><Link to="/projects" className="back-link">← {t('projects')}</Link><h1>{project.name}</h1><p><code>/{project.slug}</code> · {t('revision')} {project.draftRevision}</p></div>
             {canEdit && <div className="publish-block"><button className="publish-button" disabled={publish.isPending} onClick={() => window.confirm(t('confirmPublish')) && publish.mutate(project.draftRevision)}>{publish.isPending ? t('publishing') : t('publish')}</button><small>{t('publishHint')}</small></div>}
@@ -315,6 +334,15 @@ function ProjectPage({ user }: { user: ApiUser }): ReactNode {
         <ServerPanel detail={detail.data} canEdit={canEdit} />
         <CurseForgePanel detail={detail.data} canEdit={canEdit} />
         <ReleasePanel project={project} canEdit={canEdit} />
+        {user.role === 'ADMIN' && <section className="card danger-zone">
+            <div><h2>{t('disableProject')}</h2><p>{t('disableProjectHint')}</p></div>
+            <button
+                className="danger-button"
+                disabled={disableProject.isPending}
+                onClick={confirmDisableProject}
+            >{disableProject.isPending ? t('disablingProject') : t('disableProject')}</button>
+            <ErrorNotice error={disableProject.error} />
+        </section>}
     </>
 }
 
