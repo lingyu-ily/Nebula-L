@@ -1,7 +1,9 @@
 import got from 'got'
 import { mkdirs, pathExists } from 'fs-extra/esm'
 import { createWriteStream } from 'fs'
+import { rm } from 'fs/promises'
 import { dirname, join, resolve } from 'path'
+import { pipeline } from 'stream/promises'
 import { URL } from 'url'
 import { MavenUtil } from '../../util/MavenUtil.js'
 import { BaseFileStructure } from '../BaseFileStructure.js'
@@ -59,18 +61,19 @@ export abstract class BaseMavenRepo extends BaseFileStructure {
 
     public async downloadArtifactDirect(url: string, path: string): Promise<void> {
         BaseMavenRepo.logger.debug(`Downloading ${url}..`)
-        const request = got.stream.get({ url })
         const localPath = resolve(this.containerDirectory, path)
         await mkdirs(dirname(localPath))
-        const writer = createWriteStream(localPath)
-        request.pipe(writer)
-        return new Promise((resolve, reject) => {
-            writer.on('finish', () => {
-                BaseMavenRepo.logger.debug(`Completed download of ${url}.`)
-                resolve()
-            })
-            writer.on('error', reject)
-        })
+        try {
+            await pipeline(
+                got.stream.get({ url }),
+                createWriteStream(localPath)
+            )
+            BaseMavenRepo.logger.debug(`Completed download of ${url}.`)
+        } catch(error) {
+            await rm(localPath, { force: true })
+            const message = error instanceof Error ? error.message : String(error)
+            throw new Error(`Failed to download Maven artifact ${url}: ${message}`, { cause: error })
+        }
     }
 
     public async headArtifactById(url: string, mavenIdentifier: string, extension?: string): Promise<boolean> {

@@ -7,11 +7,15 @@ import { LibRepoStructure } from '../../../structure/repo/LibRepo.struct.js'
 import { pathExists, remove, mkdirs, copy, writeJson } from 'fs-extra/esm'
 import { lstat, readFile, writeFile } from 'fs/promises'
 import { join, basename, dirname } from 'path'
-import { spawn } from 'child_process'
 import { JavaUtil } from '../../../util/java/JavaUtil.js'
 import { VersionManifestFG3 } from '../../../model/forge/VersionManifestFG3.js'
 import { MavenUtil } from '../../../util/MavenUtil.js'
 import { createHash } from 'crypto'
+import {
+    clearForgeInstallerCache,
+    prepareForgeInstallerCache,
+    runForgeInstaller
+} from '../ForgeInstaller.js'
 
 interface GeneratedFile {
     name: string
@@ -329,44 +333,41 @@ export class ForgeGradle3Adapter extends ForgeResolver {
 
     private async processWithInstaller(installerPath: string): Promise<Module> {
 
-        let doInstall = true
-        // Check cache.
         const cacheDir = this.repoStructure.getForgeCacheDirectory(this.artifactVersion)
-        if (await pathExists(cacheDir)) {
-            if(this.invalidateCache) {
-                ForgeGradle3Adapter.logger.info(`Removing existing cache ${cacheDir}..`)
-                await remove(cacheDir)
+        const installerOutputDir = cacheDir
+        const versionManifestPath = this.getVersionManifestPath(installerOutputDir)
+        const cacheAction = await prepareForgeInstallerCache(
+            cacheDir,
+            versionManifestPath,
+            this.invalidateCache
+        )
+
+        try {
+            if(cacheAction === 'install') {
+                const workingInstaller = join(installerOutputDir, basename(installerPath))
+
+                await copy(installerPath, workingInstaller)
+
+                // Required for the installer to accept the cache as a Minecraft client directory.
+                await writeFile(join(installerOutputDir, 'launcher_profiles.json'), JSON.stringify({}))
+
+                ForgeGradle3Adapter.logger.info(`Installing Forge ${this.artifactVersion} into ${installerOutputDir}..`)
+                await runForgeInstaller({
+                    javaExecutable: JavaUtil.getJavaExecutable(),
+                    installerPath: workingInstaller,
+                    outputDirectory: installerOutputDir,
+                    version: this.artifactVersion
+                })
+                ForgeGradle3Adapter.logger.debug('Installer finished, beginning processing..')
             } else {
-                // Use cache.
-                doInstall = false
                 ForgeGradle3Adapter.logger.info(`Using cached results at ${cacheDir}.`)
             }
-        } else {
-            await mkdirs(cacheDir)
+
+            await this.verifyInstallerRan(installerOutputDir)
+        } catch(error) {
+            await clearForgeInstallerCache(cacheDir)
+            throw error
         }
-        const installerOutputDir = cacheDir
-
-        if(doInstall) {
-            const workingInstaller = join(installerOutputDir, basename(installerPath))
-
-            await copy(installerPath, workingInstaller)
-    
-            // Required for the installer to function.
-            await writeFile(join(installerOutputDir, 'launcher_profiles.json'), JSON.stringify({}))
-    
-            ForgeGradle3Adapter.logger.debug('Spawning forge installer')
-    
-            ForgeGradle3Adapter.logger.info('============== [ IMPORTANT ] ==============')
-            ForgeGradle3Adapter.logger.info('When the installer opens please set the client installation directory to:')
-            ForgeGradle3Adapter.logger.info(installerOutputDir)
-            ForgeGradle3Adapter.logger.info('===========================================')
-    
-            await this.executeInstaller(workingInstaller)
-    
-            ForgeGradle3Adapter.logger.debug('Installer finished, beginning processing..')
-        }
-
-        await this.verifyInstallerRan(installerOutputDir)
 
         ForgeGradle3Adapter.logger.debug('Processing Version Manifest')
         const versionManifestTuple = await this.processVersionManifest(installerOutputDir)
@@ -403,8 +404,7 @@ export class ForgeGradle3Adapter extends ForgeResolver {
         const versionManifestPath = this.getVersionManifestPath(installerOutputDir)
 
         if(!await pathExists(versionManifestPath)) {
-            await remove(installerOutputDir)
-            throw new Error(`Forge was either not installed or installed to the wrong location. When the forge installer opens, you MUST set the installation directory to ${installerOutputDir}`)
+            throw new Error(`Forge installer for ${this.artifactVersion} did not create the expected version manifest at ${versionManifestPath}`)
         }
     }
 
@@ -585,29 +585,6 @@ export class ForgeGradle3Adapter extends ForgeResolver {
 
         return mdls
 
-    }
-
-    private executeInstaller(installerExec: string): Promise<void> {
-        return new Promise(resolve => {
-            const fiLogger = LoggerUtil.getLogger('Forge Installer')
-            const child = spawn(JavaUtil.getJavaExecutable(), [
-                '-jar',
-                installerExec
-            ], {
-                cwd: dirname(installerExec)
-            })
-            child.stdout.on('data', (data) => fiLogger.info(data.toString('utf8').trim()))
-            child.stderr.on('data', (data) => fiLogger.error(data.toString('utf8').trim()))
-            child.on('close', code => {
-                if(code === 0) {
-                    fiLogger.info('Exited with code', code)
-                } else {
-                    fiLogger.error('Exited with code', code)
-                }
-                
-                resolve()
-            })
-        })
     }
 
     private getMCPVersion(args: string[]): string | null {
