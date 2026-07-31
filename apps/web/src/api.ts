@@ -31,12 +31,19 @@ export interface ManagedModule {
     uploadId: string | null
     type: 'ForgeMod' | 'FabricMod' | 'Library' | 'File'
     displayName: string
+    fileName: string | null
+    moduleId: string | null
     relativePath: string | null
     optionalMode: 'REQUIRED' | 'OPTIONAL_ON' | 'OPTIONAL_OFF'
+    sortOrder: number
     needsManualFile: boolean
     manualUrl: string | null
-    originalName?: string
-    size?: number
+    originalName: string | null
+    size: number | null
+    md5: string | null
+    sha256: string | null
+    createdAt: string
+    updatedAt: string
 }
 
 export interface ManagedServer {
@@ -57,6 +64,8 @@ export interface ManagedServer {
     javaOptions: unknown
     revision: number
     publishedOnce: boolean
+    createdAt: string
+    updatedAt: string
     modules: ManagedModule[]
     untrackedRules: { id: string, appliesTo: string, pattern: string }[]
 }
@@ -64,6 +73,19 @@ export interface ManagedServer {
 export interface ProjectDetail {
     project: Project
     servers: ManagedServer[]
+}
+
+export interface ServerDirectory {
+    id: string
+    path: string
+    createdAt: string
+    updatedAt: string
+}
+
+export interface ServerDetail {
+    project: Project
+    server: ManagedServer
+    directories: ServerDirectory[]
 }
 
 export interface Job {

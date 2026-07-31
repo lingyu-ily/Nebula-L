@@ -99,10 +99,9 @@ async function mockProjectPage(page: Page, catalogAvailable = true): Promise<Moc
 
 test('selects suggestions and accepts custom Minecraft and loader versions', async ({ page }) => {
     const { savedServers } = await mockProjectPage(page)
-    await page.goto('/projects/project-1')
-    await page.getByRole('button', { name: 'Add server' }).click()
+    await page.goto('/projects/project-1/servers/new')
 
-    const serverForm = page.locator('form.form-grid.inset').first()
+    const serverForm = page.locator('form.server-settings-form')
     const minecraft = serverForm.locator('input[name="minecraftVersion"]')
     await expect(minecraft).toHaveAttribute('list', 'minecraft-version-options')
     await expect(page.locator('#minecraft-version-options option')).toHaveCount(2)
@@ -131,10 +130,9 @@ test('selects suggestions and accepts custom Minecraft and loader versions', asy
 
 test('keeps manual entry available when catalogs are offline', async ({ page }) => {
     await mockProjectPage(page, false)
-    await page.goto('/projects/project-1')
-    await page.getByRole('button', { name: 'Add server' }).click()
+    await page.goto('/projects/project-1/servers/new')
 
-    const serverForm = page.locator('form.form-grid.inset').first()
+    const serverForm = page.locator('form.server-settings-form')
     const minecraft = serverForm.locator('input[name="minecraftVersion"]')
     await expect(page.getByText('Suggestions unavailable. Enter a version manually.')).toBeVisible()
     await minecraft.fill('1.99-custom')
@@ -147,10 +145,9 @@ test('keeps manual entry available when catalogs are offline', async ({ page }) 
 
 test('waits for Minecraft input and queries only the debounced version', async ({ page }) => {
     const { loaderRequests } = await mockProjectPage(page)
-    await page.goto('/projects/project-1')
-    await page.getByRole('button', { name: 'Add server' }).click()
+    await page.goto('/projects/project-1/servers/new')
 
-    const serverForm = page.locator('form.form-grid.inset').first()
+    const serverForm = page.locator('form.server-settings-form')
     await serverForm.locator('select[name="loader"]').selectOption('fabric')
     await expect(page.getByText('Choose or enter a Minecraft version first.')).toBeVisible()
     await page.waitForTimeout(500)

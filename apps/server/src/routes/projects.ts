@@ -5,6 +5,13 @@ import type { PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/prom
 import { writeAudit } from '../audit.js'
 import { getPool, withTransaction } from '../db/index.js'
 import { HttpError, requireCsrf, requireRole } from '../http.js'
+import {
+    assertFileDestinationAvailable,
+    ensureFileParentDirectories,
+    managedPathKey,
+    normalizeManagedFileName,
+    normalizeManagedPath
+} from '../managed-paths.js'
 import { auditContextFromRequest } from '../types.js'
 
 interface ProjectRow extends RowDataPacket {
@@ -51,6 +58,7 @@ interface ModuleRow extends RowDataPacket {
     upload_id: string | null
     type: 'ForgeMod' | 'FabricMod' | 'Library' | 'File'
     display_name: string
+    file_name: string | null
     module_id: string | null
     relative_path: string | null
     optional_mode: 'REQUIRED' | 'OPTIONAL_ON' | 'OPTIONAL_OFF'
@@ -61,6 +69,8 @@ interface ModuleRow extends RowDataPacket {
     size?: number
     md5?: string
     sha256?: string
+    created_at: Date
+    updated_at: Date
 }
 
 function mapProject(row: ProjectRow): Record<string, unknown> {
@@ -112,6 +122,7 @@ function mapModule(row: ModuleRow): Record<string, unknown> {
         uploadId: row.upload_id,
         type: row.type,
         displayName: row.display_name,
+        fileName: row.file_name ?? row.original_name,
         moduleId: row.module_id,
         relativePath: row.relative_path,
         optionalMode: row.optional_mode,
@@ -121,7 +132,55 @@ function mapModule(row: ModuleRow): Record<string, unknown> {
         originalName: row.original_name,
         size: row.size,
         md5: row.md5,
-        sha256: row.sha256
+        sha256: row.sha256,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+    }
+}
+
+function managedFileName(
+    type: ModuleRow['type'],
+    relativePath: string | null,
+    requestedName: string | null | undefined,
+    uploadName: string
+): string {
+    if (type === 'File') {
+        return normalizeManagedPath(relativePath ?? '').split('/').at(-1)!
+    }
+    return normalizeManagedFileName(requestedName ?? uploadName)
+}
+
+async function assertFixedDestinationAvailable(
+    connection: PoolConnection,
+    serverId: string,
+    type: ModuleRow['type'],
+    optionalMode: ModuleRow['optional_mode'],
+    fileName: string,
+    excludeModuleId?: string
+): Promise<void> {
+    if (type === 'File') {
+        return
+    }
+    const [rows] = await connection.query<ModuleRow[]>(
+        `SELECT m.*, u.original_name FROM modules m
+         LEFT JOIN uploads u ON u.id = m.upload_id
+         WHERE m.server_id = ? ${excludeModuleId ? 'AND m.id <> ?' : ''}`,
+        excludeModuleId ? [serverId, excludeModuleId] : [serverId]
+    )
+    const destination = managedPathKey(`${type}:${type === 'Library' ? 'REQUIRED' : optionalMode}:${fileName}`)
+    const duplicate = rows.some(row => {
+        if (row.type !== type) {
+            return false
+        }
+        const existingName = row.file_name ?? row.original_name
+        if (!existingName) {
+            return false
+        }
+        const existing = managedPathKey(`${row.type}:${row.type === 'Library' ? 'REQUIRED' : row.optional_mode}:${existingName}`)
+        return existing === destination
+    })
+    if (duplicate) {
+        throw new HttpError(409, 'Module path already exists')
     }
 }
 
@@ -436,30 +495,37 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
             if (parsed.data.type === 'ForgeMod' && !server.forge_version || parsed.data.type === 'FabricMod' && !server.fabric_version) {
                 throw new HttpError(409, 'Module loader mismatch')
             }
-            const [uploadRows] = await connection.query<RowDataPacket[]>(
-                'SELECT id FROM uploads WHERE id = ? AND project_id = ? AND status = \'READY\'',
+            const [uploadRows] = await connection.query<(RowDataPacket & { id: string, original_name: string })[]>(
+                'SELECT id, original_name FROM uploads WHERE id = ? AND project_id = ? AND status = \'READY\'',
                 [parsed.data.uploadId, projectId]
             )
-            if (!uploadRows[0]) {
+            const upload = uploadRows[0]
+            if (!upload) {
                 throw new HttpError(404, 'Upload not found')
             }
-            if (parsed.data.relativePath) {
-                const [duplicates] = await connection.query<RowDataPacket[]>(
-                    'SELECT id FROM modules WHERE server_id = ? AND LOWER(relative_path) = LOWER(?)',
-                    [serverId, parsed.data.relativePath]
-                )
-                if (duplicates[0]) {
-                    throw new HttpError(409, 'Module path already exists')
-                }
+            const relativePath = parsed.data.type === 'File'
+                ? normalizeManagedPath(parsed.data.relativePath ?? '')
+                : null
+            const fileName = managedFileName(parsed.data.type, relativePath, parsed.data.fileName, upload.original_name)
+            if (relativePath) {
+                await assertFileDestinationAvailable(connection, serverId, relativePath)
+                await ensureFileParentDirectories(connection, projectId, serverId, relativePath)
             }
+            await assertFixedDestinationAvailable(
+                connection,
+                serverId,
+                parsed.data.type,
+                parsed.data.optionalMode,
+                fileName
+            )
             await connection.execute(
                 `INSERT INTO modules (
-                    id, project_id, server_id, upload_id, type, display_name, module_id, relative_path,
+                    id, project_id, server_id, upload_id, type, display_name, file_name, module_id, relative_path,
                     optional_mode, sort_order, needs_manual_file, created_at, updated_at
-                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))`,
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))`,
                 [
                     id, projectId, serverId, parsed.data.uploadId, parsed.data.type, parsed.data.displayName,
-                    parsed.data.moduleId ?? null, parsed.data.relativePath ?? null,
+                    fileName, parsed.data.moduleId ?? null, relativePath,
                     parsed.data.optionalMode, parsed.data.sortOrder
                 ]
             )
@@ -469,7 +535,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                 entityType: 'module',
                 entityId: id,
                 projectId,
-                after: parsed.data
+                after: { ...parsed.data, fileName, relativePath }
             })
         })
         return reply.status(201).send({ id, draftRevision: expectedRevision + 1 })
@@ -493,29 +559,42 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
             if (!before) {
                 throw new HttpError(404, 'Module not found')
             }
-            const [uploadRows] = await connection.query<RowDataPacket[]>(
-                'SELECT id FROM uploads WHERE id = ? AND project_id = ? AND status = \'READY\'',
+            const [uploadRows] = await connection.query<(RowDataPacket & { id: string, original_name: string })[]>(
+                'SELECT id, original_name FROM uploads WHERE id = ? AND project_id = ? AND status = \'READY\'',
                 [parsed.data.uploadId, projectId]
             )
-            if (!uploadRows[0]) {
+            const upload = uploadRows[0]
+            if (!upload) {
                 throw new HttpError(404, 'Upload not found')
             }
-            if (parsed.data.relativePath) {
-                const [duplicates] = await connection.query<RowDataPacket[]>(
-                    'SELECT id FROM modules WHERE server_id = ? AND id <> ? AND LOWER(relative_path) = LOWER(?)',
-                    [serverId, moduleId, parsed.data.relativePath]
-                )
-                if (duplicates[0]) {
-                    throw new HttpError(409, 'Module path already exists')
-                }
+            const relativePath = parsed.data.type === 'File'
+                ? normalizeManagedPath(parsed.data.relativePath ?? '')
+                : null
+            const fileName = managedFileName(
+                parsed.data.type,
+                relativePath,
+                parsed.data.fileName ?? before.file_name,
+                upload.original_name
+            )
+            if (relativePath) {
+                await assertFileDestinationAvailable(connection, serverId, relativePath, moduleId)
+                await ensureFileParentDirectories(connection, projectId, serverId, relativePath)
             }
+            await assertFixedDestinationAvailable(
+                connection,
+                serverId,
+                parsed.data.type,
+                parsed.data.optionalMode,
+                fileName,
+                moduleId
+            )
             await connection.execute(
-                `UPDATE modules SET upload_id = ?, type = ?, display_name = ?, module_id = ?, relative_path = ?,
+                `UPDATE modules SET upload_id = ?, type = ?, display_name = ?, file_name = ?, module_id = ?, relative_path = ?,
                  optional_mode = ?, sort_order = ?, needs_manual_file = FALSE, manual_url = NULL,
                  updated_at = UTC_TIMESTAMP(3) WHERE id = ?`,
                 [
-                    parsed.data.uploadId, parsed.data.type, parsed.data.displayName, parsed.data.moduleId ?? null,
-                    parsed.data.relativePath ?? null, parsed.data.optionalMode, parsed.data.sortOrder, moduleId
+                    parsed.data.uploadId, parsed.data.type, parsed.data.displayName, fileName, parsed.data.moduleId ?? null,
+                    relativePath, parsed.data.optionalMode, parsed.data.sortOrder, moduleId
                 ]
             )
             await bumpProject(connection, projectId)
@@ -525,7 +604,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                 entityId: moduleId,
                 projectId,
                 before: mapModule(before),
-                after: parsed.data
+                after: { ...parsed.data, fileName, relativePath }
             })
         })
         return { updated: true, draftRevision: expectedRevision + 1 }

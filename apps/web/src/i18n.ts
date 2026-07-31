@@ -28,6 +28,14 @@ const en = {
         discordClient: 'Discord client ID', discordSmallText: 'Discord small image text', discordSmallKey: 'Discord small image key',
         discordShort: 'Discord short ID', discordLargeText: 'Discord large image text', discordLargeKey: 'Discord large image key',
         serverIcon: 'Server icon', javaSupported: 'Supported Java range', javaSuggested: 'Suggested Java major', ramMinimum: 'Minimum RAM (MB)', ramRecommended: 'Recommended RAM (MB)', untrackedRules: 'Untracked rules', untrackedHint: 'One rule per line, for example files:config/**/*.yml',
+        manage: 'Manage', overview: 'Overview', settings: 'Settings', serverNavigation: 'Server management',
+        folders: 'folders', publishBlocked: 'Publishing is blocked until files are supplied.', ready: 'Ready', noDescription: 'No description.', yes: 'Yes', no: 'No', updated: 'Updated',
+        readOnly: 'Read only', deleteServer: 'Delete server', deleteServerHint: 'This removes the server and its draft file records. Published releases remain available according to retention policy.', confirmDeleteServer: 'Delete this server?',
+        curseForgeHint: 'Importing a pack creates a new server and queues file processing.',
+        regularFiles: 'Files', libraries: 'Libraries', optionalon: 'Optional on', optionaloff: 'Optional off',
+        newFolder: 'New folder', newFolderName: 'Folder name', rename: 'Rename', renamePrompt: 'New file or folder name', move: 'Move', moveDestinationPrompt: 'Destination folder under Files (leave blank for the Files root)', replace: 'Replace',
+        displayNamePrompt: 'Display name', optionalModePrompt: 'Optional mode: REQUIRED, OPTIONAL_ON, or OPTIONAL_OFF', optionalModeInvalid: 'Enter REQUIRED, OPTIONAL_ON, or OPTIONAL_OFF.',
+        confirmDeleteFolder: 'Delete this folder, {{directoryCount}} folder(s), and {{moduleCount}} file(s)?', location: 'Location', searchFiles: 'Search this location', items: 'items', sortBy: 'Sort by', size: 'Size', folder: 'Folder', folderEmpty: 'This folder is empty.', working: 'Applying changes…',
         sessionExpired: 'Session expired. Sign in again.'
     }
 }
@@ -58,6 +66,14 @@ const zhTW = {
         discordClient: 'Discord Client ID', discordSmallText: 'Discord 小圖文字', discordSmallKey: 'Discord 小圖 Key',
         discordShort: 'Discord 短 ID', discordLargeText: 'Discord 大圖文字', discordLargeKey: 'Discord 大圖 Key',
         serverIcon: '伺服器圖示', javaSupported: '支援 Java 範圍', javaSuggested: '建議 Java 主版本', ramMinimum: '最低 RAM（MB）', ramRecommended: '建議 RAM（MB）', untrackedRules: '不追蹤規則', untrackedHint: '每行一條，例如 files:config/**/*.yml',
+        manage: '管理', overview: '總覽', settings: '設定', serverNavigation: '伺服器管理',
+        folders: '個資料夾', publishBlocked: '補齊檔案前無法發布。', ready: '可發布', noDescription: '沒有描述。', yes: '是', no: '否', updated: '更新時間',
+        readOnly: '唯讀', deleteServer: '刪除伺服器', deleteServerHint: '這會刪除伺服器及草稿檔案紀錄；已發布版本仍依保留政策保存。', confirmDeleteServer: '確定刪除此伺服器？',
+        curseForgeHint: '匯入整合包會建立新伺服器，並排入背景檔案處理工作。',
+        regularFiles: '一般檔案', libraries: 'Libraries', optionalon: '選用，預設開啟', optionaloff: '選用，預設關閉',
+        newFolder: '新增資料夾', newFolderName: '資料夾名稱', rename: '重新命名', renamePrompt: '新的檔案或資料夾名稱', move: '移動', moveDestinationPrompt: 'Files 下的目的資料夾（留空代表 Files 根目錄）', replace: '替換',
+        displayNamePrompt: '顯示名稱', optionalModePrompt: '選用狀態：REQUIRED、OPTIONAL_ON 或 OPTIONAL_OFF', optionalModeInvalid: '請輸入 REQUIRED、OPTIONAL_ON 或 OPTIONAL_OFF。',
+        confirmDeleteFolder: '確定刪除此資料夾、{{directoryCount}} 個子資料夾及 {{moduleCount}} 個檔案？', location: '位置', searchFiles: '搜尋目前位置', items: '個項目', sortBy: '排序', size: '大小', folder: '資料夾', folderEmpty: '此資料夾是空的。', working: '正在套用變更…',
         sessionExpired: '登入已失效，請重新登入。'
     }
 }

@@ -120,21 +120,42 @@ export type LoaderCatalogResponse = z.infer<typeof loaderCatalogResponseSchema>
 export const moduleTypeSchema = z.enum(['ForgeMod', 'FabricMod', 'Library', 'File'])
 export const optionalModeSchema = z.enum(['REQUIRED', 'OPTIONAL_ON', 'OPTIONAL_OFF'])
 
+function hasControlCharacters(candidate: string): boolean {
+    return [...candidate].some(character => {
+        const code = character.charCodeAt(0)
+        return code <= 31 || code === 127
+    })
+}
+
 export function isSafeRelativePath(candidate: string): boolean {
     if (candidate.length === 0 || candidate.startsWith('/') || candidate.startsWith('\\')) {
         return false
     }
-    if (/^[A-Za-z]:/.test(candidate) || candidate.includes('\\')) {
+    if (/^[A-Za-z]:/.test(candidate) || candidate.includes('\\') || hasControlCharacters(candidate)) {
         return false
     }
     const segments = candidate.split('/')
     return segments.every(segment => segment !== '' && segment !== '.' && segment !== '..')
 }
 
+export function isSafeFileName(candidate: string): boolean {
+    return candidate.length > 0
+        && candidate.length <= 255
+        && candidate !== '.'
+        && candidate !== '..'
+        && !candidate.includes('/')
+        && !candidate.includes('\\')
+        && !hasControlCharacters(candidate)
+}
+
+const managedPathSchema = z.string().max(1024).refine(isSafeRelativePath, 'A safe relative POSIX path is required')
+const managedFileNameSchema = z.string().max(255).refine(isSafeFileName, 'A safe file name is required')
+
 export const moduleInputSchema = z.object({
     uploadId: z.uuid(),
     type: moduleTypeSchema,
     displayName: z.string().trim().min(1).max(255),
+    fileName: managedFileNameSchema.nullable().optional(),
     moduleId: z.string().trim().max(512).nullable().optional(),
     relativePath: z.string().trim().max(1024).nullable().optional(),
     optionalMode: optionalModeSchema.default('REQUIRED'),
@@ -154,6 +175,27 @@ export const moduleInputSchema = z.object({
             message: 'Only mod modules may be optional'
         })
     }
+})
+
+export const directoryInputSchema = z.object({
+    path: managedPathSchema
+})
+
+export const directoryDeleteSchema = z.object({
+    recursive: z.literal(true)
+})
+
+export const modulePatchSchema = z.object({
+    displayName: z.string().trim().min(1).max(255).optional(),
+    fileName: managedFileNameSchema.optional(),
+    moduleId: z.string().trim().max(512).nullable().optional(),
+    relativePath: managedPathSchema.optional(),
+    optionalMode: optionalModeSchema.optional(),
+    sortOrder: z.number().int().min(0).optional()
+}).refine(value => Object.keys(value).length > 0, 'No changes supplied')
+
+export const moduleReplaceSchema = z.object({
+    uploadId: z.uuid()
 })
 
 export const publishSchema = z.object({

@@ -98,6 +98,7 @@ export const modules = mysqlTable('modules', {
     uploadId: char('upload_id', { length: 36 }),
     type: mysqlEnum('type', ['ForgeMod', 'FabricMod', 'Library', 'File']).notNull(),
     displayName: varchar('display_name', { length: 255 }).notNull(),
+    fileName: varchar('file_name', { length: 255 }),
     moduleId: varchar('module_id', { length: 512 }),
     relativePath: varchar('relative_path', { length: 1024 }),
     optionalMode: mysqlEnum('optional_mode', ['REQUIRED', 'OPTIONAL_ON', 'OPTIONAL_OFF']).notNull(),
@@ -106,6 +107,15 @@ export const modules = mysqlTable('modules', {
     manualUrl: varchar('manual_url', { length: 2048 }),
     ...timestamps
 })
+
+export const serverDirectories = mysqlTable('server_directories', {
+    id: char('id', { length: 36 }).primaryKey(),
+    projectId: char('project_id', { length: 36 }).notNull(),
+    serverId: char('server_id', { length: 36 }).notNull(),
+    path: varchar('path', { length: 1024 }).notNull(),
+    pathHash: char('path_hash', { length: 64 }).notNull(),
+    ...timestamps
+}, table => [uniqueIndex('server_directories_path_uq').on(table.serverId, table.pathHash)])
 
 export const jobs = mysqlTable('jobs', {
     id: char('id', { length: 36 }).primaryKey(),

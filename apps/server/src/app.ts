@@ -16,6 +16,7 @@ import { sendProblem } from './http.js'
 import { registerAuditRoutes } from './routes/audit.js'
 import { registerProjectRoutes } from './routes/projects.js'
 import { registerReleaseRoutes } from './routes/releases.js'
+import { registerServerManagementRoutes } from './routes/server-management.js'
 import { registerUploadRoutes } from './routes/uploads.js'
 import { registerUserRoutes } from './routes/users.js'
 import { registerVersionCatalogRoutes } from './routes/version-catalog.js'
@@ -70,6 +71,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     await registerAuthRoutes(app)
     await registerUserRoutes(app)
     await registerProjectRoutes(app)
+    await registerServerManagementRoutes(app)
     await registerUploadRoutes(app)
     await registerReleaseRoutes(app)
     await registerAuditRoutes(app)

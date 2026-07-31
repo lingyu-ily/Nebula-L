@@ -34,6 +34,7 @@ interface SnapshotModule {
     id: string
     type: 'ForgeMod' | 'FabricMod' | 'Library' | 'File'
     displayName: string
+    fileName: string | null
     moduleId: string | null
     relativePath: string | null
     optionalMode: 'REQUIRED' | 'OPTIONAL_ON' | 'OPTIONAL_OFF'
@@ -131,6 +132,7 @@ interface ModuleSnapshotRow extends RowDataPacket {
     upload_id: string | null
     type: SnapshotModule['type']
     display_name: string
+    file_name: string | null
     module_id: string | null
     relative_path: string | null
     optional_mode: SnapshotModule['optionalMode']
@@ -221,6 +223,7 @@ export async function buildProjectSnapshot(connection: PoolConnection, projectId
                 id: module.id,
                 type: module.type,
                 displayName: module.display_name,
+                fileName: module.file_name,
                 moduleId: module.module_id,
                 relativePath: module.relative_path,
                 optionalMode: module.optional_mode,
@@ -273,7 +276,7 @@ function namespace(mode: SnapshotModule['optionalMode']): string {
 }
 
 function getModuleRelativePath(module: SnapshotModule): string {
-    const name = module.upload?.originalName ?? `${module.id}.missing`
+    const name = module.fileName ?? module.upload?.originalName ?? `${module.id}.missing`
     if (module.type === 'File') {
         return join('files', ...(module.relativePath ?? name).split('/'))
     }
@@ -640,22 +643,22 @@ export async function importCurseForgeJob(job: JobRow): Promise<void> {
                 )
                 await connection.execute(
                     `INSERT INTO modules (
-                        id, project_id, server_id, upload_id, type, display_name, relative_path, optional_mode,
+                        id, project_id, server_id, upload_id, type, display_name, file_name, relative_path, optional_mode,
                         sort_order, needs_manual_file, created_at, updated_at
-                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, FALSE, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))`,
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, FALSE, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))`,
                     [
                         randomUUID(), job.project_id, serverId, artifact.upload.id, artifact.type,
-                        artifact.upload.originalName, artifact.relativePath, artifact.optionalMode
+                        artifact.upload.originalName, artifact.upload.originalName, artifact.relativePath, artifact.optionalMode
                     ]
                 )
             }
             for (const manual of manualFiles) {
                 await connection.execute(
                     `INSERT INTO modules (
-                        id, project_id, server_id, upload_id, type, display_name, optional_mode, sort_order,
+                        id, project_id, server_id, upload_id, type, display_name, file_name, optional_mode, sort_order,
                         needs_manual_file, manual_url, created_at, updated_at
-                     ) VALUES (?, ?, ?, NULL, ?, ?, 'REQUIRED', 0, TRUE, ?, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))`,
-                    [randomUUID(), job.project_id, serverId, forgeVersion ? 'ForgeMod' : 'FabricMod', manual.fileName, manual.url]
+                     ) VALUES (?, ?, ?, NULL, ?, ?, ?, 'REQUIRED', 0, TRUE, ?, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))`,
+                    [randomUUID(), job.project_id, serverId, forgeVersion ? 'ForgeMod' : 'FabricMod', manual.fileName, manual.fileName, manual.url]
                 )
             }
             await connection.execute(
