@@ -2,7 +2,12 @@ import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Link, NavLink, Navigate, Route, Routes, useNavigate, useParams } from './router.js'
-import type { ApiUser } from '@nebula/shared'
+import type {
+    ApiUser,
+    LoaderCatalogResponse,
+    MinecraftCatalogResponse,
+    VersionCatalogLoader
+} from '@nebula/shared'
 import {
     api,
     ApiError,
@@ -217,6 +222,33 @@ function ProjectSettings({ detail, canEdit }: { detail: ProjectDetail, canEdit: 
 function ServerForm({ project, server, onDone }: { project: Project, server?: ManagedServer, onDone: () => void }): ReactNode {
     const { t } = useTranslation()
     const queryClient = useQueryClient()
+    const initialLoader = server?.forgeVersion ? 'forge' : server?.fabricVersion ? 'fabric' : 'none'
+    const [minecraftVersion, setMinecraftVersion] = useState(server?.minecraftVersion ?? '')
+    const [loader, setLoader] = useState<'none' | VersionCatalogLoader>(initialLoader)
+    const [loaderVersion, setLoaderVersion] = useState(server?.forgeVersion ?? server?.fabricVersion ?? '')
+    const selectedLoader = loader === 'none' ? null : loader
+    const minecraftCatalog = useQuery<MinecraftCatalogResponse, Error>({
+        queryKey: ['version-catalog', 'minecraft'],
+        queryFn: () => api('/api/v1/version-catalog/minecraft'),
+        retry: false,
+        staleTime: 15 * 60 * 1_000
+    })
+    const loaderCatalog = useQuery<LoaderCatalogResponse, Error>({
+        queryKey: ['version-catalog', 'loader', selectedLoader, minecraftVersion.trim()],
+        queryFn: () => {
+            if (!selectedLoader) {
+                throw new Error('A loader must be selected')
+            }
+            const query = new URLSearchParams({
+                loader: selectedLoader,
+                minecraftVersion: minecraftVersion.trim()
+            })
+            return api(`/api/v1/version-catalog/loaders?${query}`)
+        },
+        enabled: selectedLoader != null && minecraftVersion.trim().length > 0,
+        retry: false,
+        staleTime: 15 * 60 * 1_000
+    })
     const mutation = useMutation({
         mutationFn: async ({ value, icon }: { value: Record<string, unknown>, icon: File | null }) => {
             if (icon) {
@@ -238,7 +270,6 @@ function ServerForm({ project, server, onDone }: { project: Project, server?: Ma
     const submit = (event: FormEvent<HTMLFormElement>): void => {
         event.preventDefault()
         const data = new FormData(event.currentTarget)
-        const loader = String(data.get('loader'))
         const ruleLines = String(data.get('untrackedRules') ?? '').split(/\r?\n/).map(value => value.trim()).filter(Boolean)
         const rules = ruleLines.map(line => {
             const separator = line.indexOf(':')
@@ -254,7 +285,7 @@ function ServerForm({ project, server, onDone }: { project: Project, server?: Ma
             serverKey: String(data.get('serverKey')),
             name: String(data.get('name')),
             description: String(data.get('description')),
-            minecraftVersion: String(data.get('minecraftVersion')),
+            minecraftVersion,
             serverVersion: String(data.get('serverVersion')),
             address: String(data.get('address')),
             discord: data.get('discordShort') || data.get('discordLargeText') || data.get('discordLargeKey') ? {
@@ -263,8 +294,8 @@ function ServerForm({ project, server, onDone }: { project: Project, server?: Ma
                 largeImageKey: String(data.get('discordLargeKey'))
             } : null,
             iconUploadId: server?.iconUploadId ?? null,
-            forgeVersion: loader === 'forge' ? String(data.get('loaderVersion')) : null,
-            fabricVersion: loader === 'fabric' ? String(data.get('loaderVersion')) : null,
+            forgeVersion: loader === 'forge' ? loaderVersion : null,
+            fabricVersion: loader === 'fabric' ? loaderVersion : null,
             mainServer: data.get('mainServer') === 'on',
             autoconnect: data.get('autoconnect') === 'on',
             sortOrder: Number(data.get('sortOrder')),
@@ -276,19 +307,83 @@ function ServerForm({ project, server, onDone }: { project: Project, server?: Ma
             untrackedRules: rules
         }, icon: iconValue instanceof File && iconValue.size > 0 ? iconValue : null })
     }
-    const loader = server?.forgeVersion ? 'forge' : server?.fabricVersion ? 'fabric' : 'none'
     return <form className="form-grid inset" onSubmit={submit}>
         <label>{t('serverId')}<input name="serverKey" defaultValue={server?.serverKey} disabled={server?.publishedOnce} required /></label>
         <label>{t('name')}<input name="name" defaultValue={server?.name} required /></label>
         <label className="wide">{t('description')}<textarea name="description" defaultValue={server?.description} /></label>
-        <label>{t('minecraft')}<input name="minecraftVersion" defaultValue={server?.minecraftVersion} required /></label>
+        <label>{t('minecraft')}
+            <input
+                name="minecraftVersion"
+                value={minecraftVersion}
+                onChange={event => setMinecraftVersion(event.target.value)}
+                list="minecraft-version-options"
+                autoComplete="off"
+                required
+            />
+            <datalist id="minecraft-version-options">
+                {minecraftCatalog.data?.versions.map(version =>
+                    <option key={version.value} value={version.value} />
+                )}
+            </datalist>
+            <small className={minecraftCatalog.isError ? 'field-hint warning' : 'field-hint'}>
+                {minecraftCatalog.isPending
+                    ? t('versionsLoading')
+                    : minecraftCatalog.isError
+                        ? t('versionsUnavailable')
+                        : minecraftCatalog.data.stale
+                            ? t('versionsStale')
+                            : t('manualVersionHint')}
+            </small>
+        </label>
         <label>{t('serverVersion')}<input name="serverVersion" defaultValue={server?.serverVersion ?? '1.0.0'} required /></label>
         <label>{t('address')}<input name="address" defaultValue={server?.address ?? 'localhost:25565'} required /></label>
         <label>{t('discordShort')}<input name="discordShort" defaultValue={server?.discord?.shortId} /></label>
         <label>{t('discordLargeText')}<input name="discordLargeText" defaultValue={server?.discord?.largeImageText} /></label>
         <label>{t('discordLargeKey')}<input name="discordLargeKey" defaultValue={server?.discord?.largeImageKey} /></label>
-        <label>{t('loader')}<select name="loader" defaultValue={loader}><option value="none">{t('loaderNone')}</option><option value="forge">Forge</option><option value="fabric">Fabric</option></select></label>
-        <label>{t('loaderVersion')}<input name="loaderVersion" defaultValue={server?.forgeVersion ?? server?.fabricVersion ?? ''} /></label>
+        <label>{t('loader')}<select
+            name="loader"
+            value={loader}
+            onChange={event => {
+                setLoader(event.target.value as 'none' | VersionCatalogLoader)
+                setLoaderVersion('')
+            }}
+        ><option value="none">{t('loaderNone')}</option><option value="forge">Forge</option><option value="fabric">Fabric</option></select></label>
+        <label>{t('loaderVersion')}
+            <input
+                name="loaderVersion"
+                value={loaderVersion}
+                onChange={event => setLoaderVersion(event.target.value)}
+                list="loader-version-options"
+                autoComplete="off"
+                disabled={!selectedLoader}
+                required={selectedLoader != null}
+            />
+            <datalist id="loader-version-options">
+                {loaderCatalog.data?.versions.map(version => {
+                    const flags = [
+                        version.recommended ? t('recommendedVersion') : '',
+                        version.latest ? t('latestVersion') : '',
+                        version.stable ? t('stableVersion') : ''
+                    ].filter(Boolean)
+                    return <option
+                        key={version.value}
+                        value={version.value}
+                        label={flags.length > 0 ? flags.join(' · ') : undefined}
+                    />
+                })}
+            </datalist>
+            {selectedLoader && <small className={loaderCatalog.isError ? 'field-hint warning' : 'field-hint'}>
+                {loaderCatalog.isPending
+                    ? t('versionsLoading')
+                    : loaderCatalog.isError
+                        ? t('versionsUnavailable')
+                        : loaderCatalog.data.stale
+                            ? t('versionsStale')
+                            : loaderCatalog.data.versions.length === 0
+                                ? t('noCompatibleVersions')
+                                : t('manualVersionHint')}
+            </small>}
+        </label>
         <label>{t('order')}<input name="sortOrder" type="number" min="0" defaultValue={server?.sortOrder ?? 0} /></label>
         <label>{t('javaSupported')}<input name="javaSupported" defaultValue={(server?.javaOptions as { supported?: string } | null)?.supported} placeholder=">=17" /></label>
         <label>{t('javaSuggested')}<input name="javaSuggested" type="number" min="8" defaultValue={(server?.javaOptions as { suggestedMajor?: number } | null)?.suggestedMajor} /></label>

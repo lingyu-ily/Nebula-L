@@ -18,6 +18,7 @@ import { registerProjectRoutes } from './routes/projects.js'
 import { registerReleaseRoutes } from './routes/releases.js'
 import { registerUploadRoutes } from './routes/uploads.js'
 import { registerUserRoutes } from './routes/users.js'
+import { registerVersionCatalogRoutes } from './routes/version-catalog.js'
 import { checkStorage } from './storage.js'
 
 const execFileAsync = promisify(execFile)
@@ -72,6 +73,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     await registerUploadRoutes(app)
     await registerReleaseRoutes(app)
     await registerAuditRoutes(app)
+    await registerVersionCatalogRoutes(app)
 
     const webRoot = resolve(process.cwd(), 'apps', 'web', 'dist')
     if (existsSync(webRoot)) {

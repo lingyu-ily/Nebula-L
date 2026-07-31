@@ -74,6 +74,8 @@ input, textarea, select { width: 100%; border: 1px solid #33415a; background: #0
 input:focus, textarea:focus, select:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px #65e7d614; }
 textarea { min-height: 86px; resize: vertical; }
 input:disabled { opacity: .6; }
+.field-hint { min-height: 16px; color: var(--muted); font-size: 11px; line-height: 1.4; }
+.field-hint.warning { color: var(--warning); }
 .wide { grid-column: 1 / -1; }
 .checkbox { display: flex; flex-direction: row; align-items: center; }
 .checkbox input { width: auto; accent-color: var(--cyan); }

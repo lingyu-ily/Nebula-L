@@ -82,6 +82,41 @@ export const serverInputSchema = z.object({
     message: 'Forge and Fabric are mutually exclusive'
 })
 
+export const versionCatalogLoaderSchema = z.enum(['forge', 'fabric'])
+export type VersionCatalogLoader = z.infer<typeof versionCatalogLoaderSchema>
+
+export const loaderCatalogQuerySchema = z.object({
+    loader: versionCatalogLoaderSchema,
+    minecraftVersion: z.string().trim().min(1).max(32)
+})
+
+export const minecraftVersionOptionSchema = z.object({
+    value: z.string(),
+    type: z.literal('release'),
+    releaseTime: z.string()
+})
+
+export const loaderVersionOptionSchema = z.object({
+    value: z.string(),
+    recommended: z.boolean(),
+    latest: z.boolean(),
+    stable: z.boolean()
+})
+
+export const minecraftCatalogResponseSchema = z.object({
+    versions: z.array(minecraftVersionOptionSchema),
+    stale: z.boolean()
+})
+export type MinecraftCatalogResponse = z.infer<typeof minecraftCatalogResponseSchema>
+
+export const loaderCatalogResponseSchema = z.object({
+    loader: versionCatalogLoaderSchema,
+    minecraftVersion: z.string(),
+    versions: z.array(loaderVersionOptionSchema),
+    stale: z.boolean()
+})
+export type LoaderCatalogResponse = z.infer<typeof loaderCatalogResponseSchema>
+
 export const moduleTypeSchema = z.enum(['ForgeMod', 'FabricMod', 'Library', 'File'])
 export const optionalModeSchema = z.enum(['REQUIRED', 'OPTIONAL_ON', 'OPTIONAL_OFF'])
 
