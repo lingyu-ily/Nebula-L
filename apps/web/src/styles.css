@@ -27,9 +27,11 @@ code, pre { font-family: 'DM Mono', monospace; }
 .nebula-mark::before { content: ''; position: absolute; width: 82px; height: 20px; border: 1px solid var(--cyan); border-radius: 50%; transform: rotate(-24deg); }
 .nebula-mark span { width: 16px; height: 16px; background: var(--cyan); border-radius: 50%; box-shadow: 0 0 28px var(--cyan); }
 
-.login-shell { min-height: 100vh; display: grid; grid-template-columns: minmax(360px, 540px) 1fr; }
-.login-panel { padding: clamp(48px, 8vw, 110px); display: flex; flex-direction: column; justify-content: center; }
+.login-shell { height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; display: grid; grid-template-columns: minmax(360px, 540px) 1fr; }
+.login-panel { min-height: 0; overflow-y: auto; padding: clamp(32px, 10vh, 110px) clamp(48px, 8vw, 110px); display: flex; flex-direction: column; justify-content: center; }
+.login-panel > .eyebrow { margin: 24px 0 0; }
 .login-panel h1 { font-size: clamp(36px, 5vw, 62px); margin: 32px 0 8px; letter-spacing: -.05em; }
+.login-panel > .muted { margin: 0; }
 .login-art { position: relative; overflow: hidden; background: linear-gradient(135deg, #101a2c, #0c1220); border-left: 1px solid var(--line); }
 .orbit { position: absolute; border: 1px solid #35445c; border-radius: 50%; }
 .orbit-one { width: 620px; height: 620px; left: 18%; top: 12%; }
@@ -124,6 +126,15 @@ input:disabled { opacity: .6; }
 .filters { display: flex; margin-bottom: 18px; }.filters label { min-width: 220px; }
 .audit-row { border-top: 1px solid var(--line); }.audit-row summary { display: grid; grid-template-columns: 180px minmax(180px, 1fr) 150px 80px; gap: 16px; padding: 15px 0; cursor: pointer; }.audit-row time, .audit-row span { color: var(--muted); font-size: 12px; }.audit-row pre { padding: 15px; overflow: auto; background: #090e18; color: #b8c4d7; }.result-success { color: var(--cyan) !important; }.result-failure { color: var(--danger) !important; }
 
+@media (max-height: 700px) {
+    .login-panel { padding-block: 24px; }
+    .login-panel > .nebula-mark { width: 50px; height: 50px; }
+    .login-panel > .nebula-mark::before { width: 68px; height: 16px; }
+    .login-panel > .nebula-mark span { width: 13px; height: 13px; }
+    .login-panel > .eyebrow { margin-top: 16px; }
+    .login-panel h1 { margin: 14px 0 4px; font-size: clamp(32px, 7vh, 46px); }
+    .login-panel .stack { gap: 12px; margin-top: 18px; }
+}
 @media (max-width: 900px) {
     .login-shell { grid-template-columns: 1fr; }.login-art { display: none; }
     .app-shell { grid-template-columns: 1fr; }.sidebar { position: static; height: auto; padding: 18px; flex-direction: row; align-items: center; gap: 20px; overflow-x: auto; }.sidebar nav { margin: 0; display: flex; }.account { margin: 0 0 0 auto; padding: 0; border: 0; grid-auto-flow: column; align-items: center; }.account strong, .account .role { display: none; }
