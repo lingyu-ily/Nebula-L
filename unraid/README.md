@@ -31,6 +31,16 @@ ghcr.io/lingyu-ily/nebula-l:latest
 - `RUSTFS_BUCKET`, access key, and secret key: credentials with read/write access to `private/*` and `public/*`.
 - `RUSTFS_PUBLIC_BASE_URL`: anonymous or CDN base URL from which Helios can read `public/*`.
 
+The Launcher distribution URL is derived from that base URL:
+
+```text
+{RUSTFS_PUBLIC_BASE_URL}/public/{distribution-slug}/distribution.json
+```
+
+Use this stable URL in Launcher configuration. Do not use the immutable `releases/{release-id}/distribution.json` URL.
+
+For an existing installation, update the Nebula container and publish once before releasing the updated Launcher. The new Launcher URL must return HTTP `200` first.
+
 When services share a custom Docker network, container names can be used:
 
 ```text

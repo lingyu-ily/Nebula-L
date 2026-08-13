@@ -22,6 +22,30 @@ export interface StoredObject {
     sha256: string
 }
 
+export interface StoredObjectExpectation {
+    size: number
+    sha256: string
+    cacheControl?: string
+    releaseId?: string
+}
+
+interface StoredObjectMetadata {
+    contentLength: number | undefined
+    sha256: string | undefined
+    cacheControl: string | undefined
+    releaseId: string | undefined
+}
+
+export function storedObjectMetadataMatches(
+    actual: StoredObjectMetadata,
+    expected: StoredObjectExpectation
+): boolean {
+    return actual.contentLength === expected.size
+        && actual.sha256 === expected.sha256
+        && (expected.cacheControl == null || actual.cacheControl === expected.cacheControl)
+        && (expected.releaseId == null || actual.releaseId === expected.releaseId)
+}
+
 let client: S3Client | undefined
 
 export function getStorageClient(): S3Client {
@@ -137,13 +161,7 @@ export async function uploadFile(
             sha256: hashes.sha256
         }
     }))
-    const head = await getStorageClient().send(new HeadObjectCommand({
-        Bucket: getConfig().rustfs.bucket,
-        Key: objectKey
-    }))
-    if (Number(head.ContentLength) !== hashes.size || head.Metadata?.sha256 !== hashes.sha256) {
-        throw new Error(`RustFS verification failed for ${objectKey}`)
-    }
+    await verifyStoredObject(objectKey, hashes)
     return { objectKey, ...hashes }
 }
 
@@ -162,7 +180,12 @@ export async function putJson(objectKey: string, value: unknown, cacheControl: s
     }))
 }
 
-export async function copyJson(sourceKey: string, destinationKey: string, cacheControl: string): Promise<void> {
+export async function copyJson(
+    sourceKey: string,
+    destinationKey: string,
+    cacheControl: string,
+    releaseId?: string
+): Promise<StoredObject> {
     const source = await getStorageClient().send(new GetObjectCommand({
         Bucket: getConfig().rustfs.bucket,
         Key: sourceKey
@@ -171,15 +194,38 @@ export async function copyJson(sourceKey: string, destinationKey: string, cacheC
         throw new Error(`RustFS object ${sourceKey} has no body`)
     }
     const body = Buffer.from(await source.Body.transformToByteArray())
+    const md5 = createHash('md5').update(body).digest('hex')
+    const sha256 = createHash('sha256').update(body).digest('hex')
     await getStorageClient().send(new PutObjectCommand({
         Bucket: getConfig().rustfs.bucket,
         Key: destinationKey,
         ContentType: 'application/json; charset=utf-8',
         ContentLength: body.length,
         CacheControl: cacheControl,
-        Metadata: source.Metadata,
+        Metadata: { md5, sha256, ...(releaseId ? { 'release-id': releaseId } : {}) },
         Body: body
     }))
+    await verifyStoredObject(destinationKey, { size: body.length, sha256, cacheControl, releaseId })
+    return { objectKey: destinationKey, size: body.length, md5, sha256 }
+}
+
+export async function verifyStoredObject(
+    objectKey: string,
+    expected: StoredObjectExpectation
+): Promise<void> {
+    const head = await getStorageClient().send(new HeadObjectCommand({
+        Bucket: getConfig().rustfs.bucket,
+        Key: objectKey
+    }))
+    const matches = storedObjectMetadataMatches({
+        contentLength: head.ContentLength == null ? undefined : Number(head.ContentLength),
+        sha256: head.Metadata?.sha256,
+        cacheControl: head.CacheControl,
+        releaseId: head.Metadata?.['release-id']
+    }, expected)
+    if (!matches) {
+        throw new Error(`RustFS verification failed for ${objectKey}`)
+    }
 }
 
 export async function deleteObjects(keys: string[]): Promise<void> {

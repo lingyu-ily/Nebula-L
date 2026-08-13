@@ -21,6 +21,7 @@ import {
     replacePathPrefix
 } from '../managed-paths.js'
 import { auditContextFromRequest } from '../types.js'
+import { getLauncherUrl } from '../stable-distribution.js'
 
 type ModuleType = 'ForgeMod' | 'FabricMod' | 'Library' | 'File'
 type OptionalMode = 'REQUIRED' | 'OPTIONAL_ON' | 'OPTIONAL_OFF'
@@ -104,6 +105,7 @@ function mapProject(row: ProjectRow): Record<string, unknown> {
         discord: row.discord,
         draftRevision: Number(row.draft_revision),
         activeReleaseId: row.active_release_id,
+        launcherUrl: getLauncherUrl(row.slug),
         disabled: Boolean(row.disabled),
         createdAt: row.created_at,
         updatedAt: row.updated_at

@@ -50,6 +50,16 @@ private/uploads/{project-id}/...
 
 The stable `distribution.json` is replaced only after every immutable release object has uploaded and passed size/SHA-256 verification. Ten successful releases are retained. Release metadata and audit records remain in MariaDB after old objects are cleaned.
 
+Configure Helios Launcher with the stable URL, never a URL containing a release ID:
+
+```text
+{RUSTFS_PUBLIC_BASE_URL}/public/{distribution-slug}/distribution.json
+```
+
+The management page displays this URL and verifies that the stable object's size and SHA-256 match the active release. `/health/ready` also reports not ready if an active distribution has a missing or mismatched stable object.
+
+When adopting this layout for an existing Launcher, deploy Nebula and publish the Distribution first. Confirm that the stable URL returns HTTP `200` before releasing a Launcher build that uses it.
+
 Nebula writes `no-cache, must-revalidate` to the stable object and `public, max-age=31536000, immutable` to release objects. Confirm that the deployed RustFS version or CDN forwards the stored S3 `Cache-Control` value on anonymous responses; if it does not, apply equivalent path rules at the CDN/reverse-proxy layer.
 
 ### Local development

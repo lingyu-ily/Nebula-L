@@ -7,6 +7,11 @@ import { getPool, withTransaction } from '../db/index.js'
 import { HttpError, requireCsrf, requireRole } from '../http.js'
 import { buildProjectSnapshot } from '../publisher.js'
 import { copyJson } from '../storage.js'
+import {
+    assertStableDistribution,
+    getReleaseDistributionExpectation,
+    getStableDistributionKey
+} from '../stable-distribution.js'
 import { auditContextFromRequest } from '../types.js'
 
 interface JobListRow extends RowDataPacket {
@@ -164,7 +169,14 @@ export async function registerReleaseRoutes(app: FastifyInstance): Promise<void>
         if (!release) {
             throw new HttpError(404, 'Retained release not found')
         }
-        await copyJson(release.distribution_key, `public/${release.slug}/distribution.json`, 'no-cache, must-revalidate')
+        const expected = await getReleaseDistributionExpectation(projectId, releaseId)
+        await copyJson(
+            release.distribution_key,
+            getStableDistributionKey(release.slug),
+            'no-cache, must-revalidate',
+            releaseId
+        )
+        await assertStableDistribution(release.slug, releaseId, expected)
         await withTransaction(async connection => {
             await connection.execute(
                 'UPDATE releases SET status = \'AVAILABLE\' WHERE project_id = ? AND status = \'ACTIVE\'',

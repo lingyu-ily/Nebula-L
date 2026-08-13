@@ -14,6 +14,8 @@ export interface Project {
     discord: null | { clientId: string, smallImageText: string, smallImageKey: string }
     draftRevision: number
     activeReleaseId: string | null
+    launcherUrl: string
+    stableDistributionReady?: boolean
     disabled: boolean
 }
 

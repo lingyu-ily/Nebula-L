@@ -20,6 +20,7 @@ import { registerServerManagementRoutes } from './routes/server-management.js'
 import { registerUploadRoutes } from './routes/uploads.js'
 import { registerUserRoutes } from './routes/users.js'
 import { registerVersionCatalogRoutes } from './routes/version-catalog.js'
+import { checkActiveDistributions } from './stable-distribution.js'
 import { checkStorage } from './storage.js'
 
 const execFileAsync = promisify(execFile)
@@ -58,6 +59,7 @@ export async function buildApp(): Promise<FastifyInstance> {
         try {
             await getPool().query('SELECT 1')
             await checkStorage()
+            await checkActiveDistributions()
             await execFileAsync(config.javaExecutable, ['-version'], { timeout: 5000 })
             return { status: 'ready', database: 'ok', rustfs: 'ok', java: 'ok' }
         } catch (error) {

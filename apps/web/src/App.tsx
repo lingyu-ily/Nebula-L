@@ -219,6 +219,28 @@ function ProjectSettings({ detail, canEdit }: { detail: ProjectDetail, canEdit: 
     </section>
 }
 
+function LauncherPanel({ project }: { project: Project }): ReactNode {
+    const { t } = useTranslation()
+    const [copied, setCopied] = useState(false)
+    const copyUrl = async (): Promise<void> => {
+        await navigator.clipboard.writeText(project.launcherUrl)
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 2000)
+    }
+    const status = !project.activeReleaseId
+        ? t('launcherNotPublished')
+        : project.stableDistributionReady
+            ? t('launcherReady')
+            : t('launcherUnavailable')
+    return <section className={`card launcher-card ${project.activeReleaseId && !project.stableDistributionReady ? 'launcher-warning' : ''}`}>
+        <div className="section-heading"><div><h2>{t('launcherDistribution')}</h2><p className="muted">{t('launcherDistributionHint')}</p></div>
+            <span className={`pill ${project.stableDistributionReady ? 'result-success' : ''}`}>{status}</span>
+        </div>
+        <div className="launcher-url-row"><code>{project.launcherUrl}</code><button type="button" className="secondary" onClick={() => void copyUrl()}>{copied ? t('copied') : t('copyUrl')}</button></div>
+        <dl className="launcher-meta"><div><dt>{t('activeReleaseId')}</dt><dd><code>{project.activeReleaseId ?? '—'}</code></dd></div></dl>
+    </section>
+}
+
 function ServerPanel({ detail, canEdit }: { detail: ProjectDetail, canEdit: boolean }): ReactNode {
     const { t } = useTranslation()
     return <section className="card"><div className="section-heading"><h2>{t('servers')}</h2>{canEdit && <Link className="secondary button-link" to={`/projects/${detail.project.id}/servers/new`}>{t('newServer')}</Link>}</div>
@@ -330,6 +352,7 @@ function ProjectPage({ user }: { user: ApiUser }): ReactNode {
             {canEdit && <div className="publish-block"><button className="publish-button" disabled={publish.isPending} onClick={() => window.confirm(t('confirmPublish')) && publish.mutate(project.draftRevision)}>{publish.isPending ? t('publishing') : t('publish')}</button><small>{t('publishHint')}</small></div>}
         </header>
         <ErrorNotice error={publish.error} />
+        <LauncherPanel project={project} />
         <ProjectSettings detail={detail.data} canEdit={canEdit} />
         <ServerPanel detail={detail.data} canEdit={canEdit} />
         <CurseForgePanel detail={detail.data} canEdit={canEdit} />

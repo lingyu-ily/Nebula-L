@@ -19,6 +19,7 @@ import {
     downloadToFile,
     uploadFile
 } from './storage.js'
+import { assertStableDistribution, getStableDistributionKey } from './stable-distribution.js'
 
 interface SnapshotUpload {
     id: string
@@ -512,7 +513,18 @@ export async function publishJob(job: JobRow): Promise<void> {
         }
         const distributionKey = `${releasePrefix}/distribution.json`
         await persistRelease(job, snapshot, distributionKey, releaseFiles)
-        await copyJson(distributionKey, `public/${snapshot.slug}/distribution.json`, 'no-cache, must-revalidate')
+        const releaseDistribution = releaseFiles.find(file => file.logicalPath === 'distribution.json')
+        if (!releaseDistribution) {
+            throw new Error('Generated release does not contain distribution.json')
+        }
+        await copyJson(distributionKey, getStableDistributionKey(snapshot.slug), 'no-cache, must-revalidate', job.id)
+        await assertStableDistribution(snapshot.slug, job.id, {
+            distributionKey,
+            size: releaseDistribution.size,
+            sha256: releaseDistribution.sha256,
+            cacheControl: 'no-cache, must-revalidate',
+            releaseId: job.id
+        })
         await activateRelease(job, snapshot)
         await enforceRetention(snapshot.id, job.id)
     } finally {

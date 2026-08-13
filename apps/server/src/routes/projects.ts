@@ -13,6 +13,7 @@ import {
     normalizeManagedPath
 } from '../managed-paths.js'
 import { auditContextFromRequest } from '../types.js'
+import { getLauncherUrl, isStableDistributionReady } from '../stable-distribution.js'
 
 interface ProjectRow extends RowDataPacket {
     id: string
@@ -85,7 +86,8 @@ function mapProject(row: ProjectRow): Record<string, unknown> {
         activeReleaseId: row.active_release_id,
         disabled: Boolean(row.disabled),
         createdAt: row.created_at,
-        updatedAt: row.updated_at
+        updatedAt: row.updated_at,
+        launcherUrl: getLauncherUrl(row.slug)
     }
 }
 
@@ -253,8 +255,13 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
              WHERE s.project_id = ? ORDER BY r.applies_to, r.pattern`,
             [projectId]
         )
+        const stableDistributionReady = await isStableDistributionReady(
+            project.id,
+            project.slug,
+            project.active_release_id
+        )
         return {
-            project: mapProject(project),
+            project: { ...mapProject(project), stableDistributionReady },
             servers: serverRows.map(row => ({
                 ...mapServer(row),
                 modules: moduleRows.filter(module => module.server_id === row.id).map(mapModule),
