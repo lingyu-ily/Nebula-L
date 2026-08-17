@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import {
     isNoSuchKeyError,
     retryNoSuchKey,
+    S3_COMPATIBILITY_OPTIONS,
     stageUpload,
     storedObjectMetadataMatches,
     storedUploadMetadataMatches
@@ -49,6 +50,13 @@ describe('stored object verification', () => {
 
 describe('private upload verification', () => {
     const expected = { size: 128, md5: 'a'.repeat(32), sha256: 'b'.repeat(64) }
+
+    it('disables optional AWS streaming checksums for RustFS compatibility', () => {
+        expect(S3_COMPATIBILITY_OPTIONS).toEqual({
+            requestChecksumCalculation: 'WHEN_REQUIRED',
+            responseChecksumValidation: 'WHEN_REQUIRED'
+        })
+    })
 
     it('accepts legacy objects without hash metadata when size matches', () => {
         expect(storedUploadMetadataMatches({

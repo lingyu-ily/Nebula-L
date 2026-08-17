@@ -89,6 +89,11 @@ export function storedUploadMetadataMatches(
 
 let client: S3Client | undefined
 
+export const S3_COMPATIBILITY_OPTIONS = {
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED'
+} as const
+
 export function getStorageClient(): S3Client {
     if (!client) {
         const config = getConfig().rustfs
@@ -99,7 +104,8 @@ export function getStorageClient(): S3Client {
                 accessKeyId: config.accessKeyId,
                 secretAccessKey: config.secretAccessKey
             },
-            forcePathStyle: true
+            forcePathStyle: true,
+            ...S3_COMPATIBILITY_OPTIONS
         })
     }
     return client
