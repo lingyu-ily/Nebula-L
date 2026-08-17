@@ -1,8 +1,8 @@
-import { createHash, randomUUID } from 'crypto'
+import { createHash } from 'crypto'
 import { createReadStream, createWriteStream } from 'fs'
 import { mkdtemp, rm, stat } from 'fs/promises'
 import { tmpdir } from 'os'
-import { basename, join } from 'path'
+import { join } from 'path'
 import { Readable, Transform } from 'stream'
 import { pipeline } from 'stream/promises'
 import {
@@ -111,8 +111,12 @@ export function getStorageClient(): S3Client {
     return client
 }
 
-function safeName(name: string): string {
-    return basename(name).replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 255) || 'upload.bin'
+export const PRIVATE_UPLOAD_CONTENT_TYPE = 'application/octet-stream'
+
+export function privateUploadObjectKey(projectId: string, uploadId: string): string {
+    // The database retains the original filename and MIME type. Keeping the private
+    // object opaque prevents S3 gateways from routing uploads by extension or media type.
+    return `private/uploads/${projectId}/${uploadId}/payload`
 }
 
 export interface StagedUpload extends Omit<StoredObject, 'objectKey'> {
@@ -198,16 +202,15 @@ async function deleteObjectBestEffort(objectKey: string): Promise<void> {
 
 export async function uploadStream(
     projectId: string,
-    originalName: string,
-    contentType: string,
+    uploadId: string,
     source: Readable,
     maxBytes: number
 ): Promise<StoredObject> {
-    const objectKey = `private/uploads/${projectId}/${randomUUID()}/${safeName(originalName)}`
+    const objectKey = privateUploadObjectKey(projectId, uploadId)
     const staged = await stageUpload(source, maxBytes)
     const cacheControl = 'private, no-store'
     try {
-        await uploadKnownFile(staged.path, objectKey, contentType, cacheControl, staged)
+        await uploadKnownFile(staged.path, objectKey, PRIVATE_UPLOAD_CONTENT_TYPE, cacheControl, staged)
         await verifyStoredObject(objectKey, { ...staged, cacheControl })
     } catch (error) {
         await deleteObjectBestEffort(objectKey)

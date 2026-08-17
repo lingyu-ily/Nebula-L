@@ -5,6 +5,8 @@ import { Readable } from 'stream'
 import { describe, expect, it } from 'vitest'
 import {
     isNoSuchKeyError,
+    PRIVATE_UPLOAD_CONTENT_TYPE,
+    privateUploadObjectKey,
     retryNoSuchKey,
     S3_COMPATIBILITY_OPTIONS,
     stageUpload,
@@ -50,6 +52,12 @@ describe('stored object verification', () => {
 
 describe('private upload verification', () => {
     const expected = { size: 128, md5: 'a'.repeat(32), sha256: 'b'.repeat(64) }
+
+    it('uses an opaque key and neutral storage content type', () => {
+        expect(privateUploadObjectKey('project-1', 'upload-1'))
+            .toBe('private/uploads/project-1/upload-1/payload')
+        expect(PRIVATE_UPLOAD_CONTENT_TYPE).toBe('application/octet-stream')
+    })
 
     it('disables optional AWS streaming checksums for RustFS compatibility', () => {
         expect(S3_COMPATIBILITY_OPTIONS).toEqual({

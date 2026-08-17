@@ -81,10 +81,10 @@ export async function registerUploadRoutes(app: FastifyInstance): Promise<void> 
         if (!file) {
             throw new HttpError(400, 'File is required')
         }
+        const id = randomUUID()
         const stored = await uploadStream(
             projectId,
-            file.filename,
-            file.mimetype || 'application/octet-stream',
+            id,
             file.file,
             getConfig().maxUploadBytes
         )
@@ -92,7 +92,6 @@ export async function registerUploadRoutes(app: FastifyInstance): Promise<void> 
             await deleteObjects([stored.objectKey]).catch(() => undefined)
             throw new HttpError(413, 'Upload too large')
         }
-        const id = randomUUID()
         try {
             await withTransaction(async connection => {
                 await connection.execute(
