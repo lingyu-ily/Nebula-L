@@ -6,6 +6,7 @@ const en = {
     translation: {
         brand: 'Nebula Console',
         tagline: 'Controlled releases for every Helios distribution.',
+        buildVersionLabel: 'Nebula version {{version}}, build {{commit}}',
         login: 'Sign in', username: 'Username', password: 'Password', logout: 'Sign out',
         projects: 'Distributions', users: 'Accounts', audit: 'Audit log',
         newProject: 'New distribution', name: 'Name', slug: 'Slug', description: 'Description', rss: 'RSS URL', create: 'Create', save: 'Save', cancel: 'Cancel',
@@ -48,6 +49,7 @@ const zhTW = {
     translation: {
         brand: 'Nebula 管理台',
         tagline: '可控、可稽核的 Helios distribution 發布流程。',
+        buildVersionLabel: 'Nebula 版本 {{version}}，建置 {{commit}}',
         login: '登入', username: '帳號', password: '密碼', logout: '登出',
         projects: 'Distribution', users: '帳號管理', audit: '稽核紀錄',
         newProject: '新增 distribution', name: '名稱', slug: '網址代稱', description: '描述', rss: 'RSS 網址', create: '建立', save: '儲存', cancel: '取消',

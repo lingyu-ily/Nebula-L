@@ -23,6 +23,7 @@ import {
     ServerRootRedirect,
     ServerSettingsPage
 } from './server-pages.js'
+import { BuildVersion } from './BuildVersion.js'
 
 function useSession(): ReturnType<typeof useQuery<AuthResponse, Error>> {
     return useQuery({
@@ -71,6 +72,7 @@ function LoginPage(): ReactNode {
                 <ErrorNotice error={login.error} />
                 <button className="primary" disabled={login.isPending}>{t('login')}</button>
             </form>
+            <BuildVersion />
         </section>
         <aside className="login-art" aria-hidden="true">
             <div className="orbit orbit-one" /><div className="orbit orbit-two" />
@@ -133,6 +135,7 @@ function Shell({ user, children }: { user: ApiUser, children: ReactNode }): Reac
                 <strong>{user.username}</strong>
                 <button className="text-button" onClick={toggleLanguage}>{t('language')}</button>
                 <button className="text-button" disabled={logout.isPending} onClick={() => logout.mutate()}>{t('logout')}</button>
+                <BuildVersion />
             </div>
         </aside>
         <main className="content">{children}</main>

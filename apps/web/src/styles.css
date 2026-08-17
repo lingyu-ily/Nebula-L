@@ -32,6 +32,8 @@ code, pre { font-family: 'DM Mono', monospace; }
 .login-panel > .eyebrow { margin: 24px 0 0; }
 .login-panel h1 { font-size: clamp(36px, 5vw, 62px); margin: 32px 0 8px; letter-spacing: -.05em; }
 .login-panel > .muted { margin: 0; }
+.build-version { color: #66758c; font: 500 11px 'DM Mono', monospace; letter-spacing: .04em; white-space: nowrap; }
+.login-panel > .build-version { margin-top: 24px; }
 .login-art { position: relative; overflow: hidden; background: linear-gradient(135deg, #101a2c, #0c1220); border-left: 1px solid var(--line); }
 .orbit { position: absolute; border: 1px solid #35445c; border-radius: 50%; }
 .orbit-one { width: 620px; height: 620px; left: 18%; top: 12%; }
@@ -49,6 +51,7 @@ code, pre { font-family: 'DM Mono', monospace; }
 .sidebar nav a { padding: 11px 14px; border-radius: 8px; color: var(--muted); }
 .sidebar nav a.active { color: #fff; background: #182236; box-shadow: inset 2px 0 var(--cyan); }
 .account { margin-top: auto; padding: 16px 10px; display: grid; gap: 8px; border-top: 1px solid var(--line); }
+.account .build-version { margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--line); }
 .content { width: min(1320px, 100%); padding: 44px clamp(24px, 4vw, 64px) 80px; }
 
 .page-header { display: flex; justify-content: space-between; align-items: end; gap: 32px; margin-bottom: 30px; }
@@ -223,10 +226,12 @@ input:disabled { opacity: .6; }
     .login-panel > .eyebrow { margin-top: 16px; }
     .login-panel h1 { margin: 14px 0 4px; font-size: clamp(32px, 7vh, 46px); }
     .login-panel .stack { gap: 12px; margin-top: 18px; }
+    .login-panel > .build-version { margin-top: 14px; }
 }
 @media (max-width: 900px) {
     .login-shell { grid-template-columns: 1fr; }.login-art { display: none; }
     .app-shell { grid-template-columns: 1fr; }.sidebar { position: static; height: auto; padding: 18px; flex-direction: row; align-items: center; gap: 20px; overflow-x: auto; }.sidebar nav { margin: 0; display: flex; }.account { margin: 0 0 0 auto; padding: 0; border: 0; grid-auto-flow: column; align-items: center; }.account strong, .account .role { display: none; }
+    .account .build-version { margin: 0; padding: 0; border: 0; }
     .content { padding: 28px 18px 60px; }.two-column { grid-template-columns: 1fr; }.page-header { align-items: start; flex-direction: column; }.publish-block { justify-items: start; text-align: left; }
     .server-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .server-description dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }

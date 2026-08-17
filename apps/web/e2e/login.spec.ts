@@ -5,6 +5,7 @@ test('shows the protected Nebula sign-in surface', async ({ page }) => {
     await expect(page.getByRole('heading', { name: /Nebula/ })).toBeVisible()
     await expect(page.getByLabel(/帳號|Username/)).toBeVisible()
     await expect(page.getByLabel(/密碼|Password/)).toBeVisible()
+    await expect(page.getByLabel(/Nebula 版本|Nebula version/)).toHaveText(/^v0\.1\.0 · (?:[0-9a-f]{7}|dev)$/)
 })
 
 for (const viewport of [
@@ -25,6 +26,7 @@ for (const viewport of [
         await expect(page.getByLabel(/帳號|Username/)).toBeVisible()
         await expect(page.getByLabel(/密碼|Password/)).toBeVisible()
         await expect(page.getByRole('button', { name: /登入|Sign in/ })).toBeVisible()
+        await expect(page.getByLabel(/Nebula 版本|Nebula version/)).toBeVisible()
     })
 }
 
@@ -44,6 +46,10 @@ test('keeps every login control reachable in an extremely short viewport', async
     const submit = page.getByRole('button', { name: /登入|Sign in/ })
     await submit.scrollIntoViewIfNeeded()
     await expect(submit).toBeVisible()
+
+    const buildVersion = page.getByLabel(/Nebula 版本|Nebula version/)
+    await buildVersion.scrollIntoViewIfNeeded()
+    await expect(buildVersion).toBeVisible()
 })
 
 test('returns to the sign-in page after logout', async ({ page }) => {
@@ -94,6 +100,7 @@ test('returns to the sign-in page after logout', async ({ page }) => {
     })
 
     await page.goto('/projects')
+    await expect(page.getByLabel(/^Nebula version 0\.1\.0, build (?:[0-9a-f]{7,40}|dev)$/)).toBeVisible()
     await page.getByRole('button', { name: 'Sign out' }).click()
 
     await expect(page).toHaveURL(/\/$/)

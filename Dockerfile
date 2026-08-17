@@ -1,5 +1,8 @@
 FROM node:22.18-bookworm-slim AS build
 
+ARG NEBULA_BUILD_COMMIT=dev
+ENV NEBULA_BUILD_COMMIT=${NEBULA_BUILD_COMMIT}
+
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY apps/server/package.json apps/server/package.json
