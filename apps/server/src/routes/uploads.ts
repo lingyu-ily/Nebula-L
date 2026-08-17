@@ -6,7 +6,7 @@ import { writeAudit } from '../audit.js'
 import { getConfig } from '../config.js'
 import { getPool, withTransaction } from '../db/index.js'
 import { HttpError, requireCsrf, requireRole } from '../http.js'
-import { getStoredObject, uploadStream } from '../storage.js'
+import { deleteObjects, getStoredObject, uploadStream } from '../storage.js'
 import { auditContextFromRequest } from '../types.js'
 
 interface UploadRow extends RowDataPacket {
@@ -89,32 +89,38 @@ export async function registerUploadRoutes(app: FastifyInstance): Promise<void> 
             getConfig().maxUploadBytes
         )
         if (file.file.truncated) {
+            await deleteObjects([stored.objectKey]).catch(() => undefined)
             throw new HttpError(413, 'Upload too large')
         }
         const id = randomUUID()
-        await withTransaction(async connection => {
-            await connection.execute(
-                `INSERT INTO uploads (
-                    id, project_id, object_key, original_name, mime_type, size, md5, sha256, status, created_by, created_at
-                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'READY', ?, UTC_TIMESTAMP(3))`,
-                [
-                    id, projectId, stored.objectKey, file.filename.slice(0, 512),
-                    file.mimetype || 'application/octet-stream', stored.size, stored.md5, stored.sha256, request.auth.id
-                ]
-            )
-            await writeAudit(connection, auditContextFromRequest(request), {
-                action: 'upload.created',
-                entityType: 'upload',
-                entityId: id,
-                projectId,
-                after: {
-                    originalName: file.filename,
-                    size: stored.size,
-                    md5: stored.md5,
-                    sha256: stored.sha256
-                }
+        try {
+            await withTransaction(async connection => {
+                await connection.execute(
+                    `INSERT INTO uploads (
+                        id, project_id, object_key, original_name, mime_type, size, md5, sha256, status, created_by, created_at
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'READY', ?, UTC_TIMESTAMP(3))`,
+                    [
+                        id, projectId, stored.objectKey, file.filename.slice(0, 512),
+                        file.mimetype || 'application/octet-stream', stored.size, stored.md5, stored.sha256, request.auth.id
+                    ]
+                )
+                await writeAudit(connection, auditContextFromRequest(request), {
+                    action: 'upload.created',
+                    entityType: 'upload',
+                    entityId: id,
+                    projectId,
+                    after: {
+                        originalName: file.filename,
+                        size: stored.size,
+                        md5: stored.md5,
+                        sha256: stored.sha256
+                    }
+                })
             })
-        })
+        } catch (error) {
+            await deleteObjects([stored.objectKey]).catch(() => undefined)
+            throw error
+        }
         return reply.status(201).send({ id, ...stored, objectKey: undefined })
     })
 

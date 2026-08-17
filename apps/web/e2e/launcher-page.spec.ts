@@ -8,7 +8,7 @@ async function fulfillJson(route: Route, value: unknown, status = 200): Promise<
     })
 }
 
-async function mockLauncherPage(page: Page): Promise<unknown[]> {
+async function mockLauncherPage(page: Page, missingImages = false): Promise<unknown[]> {
     const saves: unknown[] = []
     await page.addInitScript(() => localStorage.setItem('i18nextLng', 'en'))
     await page.route('**/api/v1/**', async route => {
@@ -28,10 +28,16 @@ async function mockLauncherPage(page: Page): Promise<unknown[]> {
                     iconUploadId: null, forgeVersion: null, fabricVersion: null, mainServer: true, autoconnect: false,
                     sortOrder: 0, javaOptions: null, revision: 0, publishedOnce: false, createdAt: '', updatedAt: '',
                     modules: [], untrackedRules: [],
-                    launcherUi: { backgroundUploadId: null, logoUploadId: null, eyebrow: '', title: '', tagline: '', rss: '' }
+                    launcherUi: {
+                        backgroundUploadId: missingImages ? 'missing-background' : null,
+                        logoUploadId: missingImages ? 'missing-logo' : null,
+                        eyebrow: '', title: '', tagline: '', rss: ''
+                    }
                 },
                 directories: []
             })
+        } else if (url.pathname.includes('/uploads/missing-') && url.pathname.endsWith('/content')) {
+            await fulfillJson(route, { title: 'The specified key does not exist.' }, 500)
         } else if (url.pathname.endsWith('/launcher-ui') && request.method() === 'PATCH') {
             saves.push(request.postDataJSON())
             await fulfillJson(route, { updated: true, draftRevision: 5 })
@@ -65,4 +71,12 @@ test('edits and previews per-server launcher copy', async ({ page }) => {
         tagline: 'Build your own empire.',
         rss: 'https://example.com/adventure/rss'
     })
+})
+
+test('shows a recoverable message when stored launcher images are missing', async ({ page }) => {
+    await mockLauncherPage(page, true)
+    await page.goto('/projects/project-1/servers/server-1/launcher')
+
+    await expect(page.locator('.launcher-preview-missing')).toHaveText('The source image is missing. Re-upload it.')
+    await expect(page.getByRole('button', { name: 'Clear image', exact: true })).toHaveCount(2)
 })

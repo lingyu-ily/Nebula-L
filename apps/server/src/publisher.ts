@@ -13,10 +13,14 @@ import {
 import { writeAudit } from './audit.js'
 import { getConfig } from './config.js'
 import { getPool, withTransaction } from './db/index.js'
+import { PermanentJobError, shouldRetryJob } from './job-errors.js'
 import {
     copyJson,
     deleteObjects,
     downloadToFile,
+    isStorageObjectIntegrityError,
+    isStorageObjectMissingError,
+    verifyStoredUpload,
     uploadFile
 } from './storage.js'
 import { assertStableDistribution, getStableDistributionKey } from './stable-distribution.js'
@@ -188,7 +192,7 @@ function parseJson<T>(value: T | string | null): T | null {
 
 const LAUNCHER_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 
-function snapshotLauncherImage(
+function snapshotUpload(
     serverKey: string,
     label: string,
     values: {
@@ -199,15 +203,16 @@ function snapshotLauncherImage(
         size: number | null
         md5: string | null
         sha256: string | null
-    }
+    },
+    requireLauncherImage = false
 ): SnapshotUpload | null {
     if (!values.id) {
         return null
     }
     if (!values.objectKey || !values.originalName || !values.mimeType || values.size == null || !values.md5 || !values.sha256) {
-        throw new Error(`${label} image for server ${serverKey} is unavailable`)
+        throw new Error(`${label} for server ${serverKey} is unavailable`)
     }
-    if (!LAUNCHER_IMAGE_TYPES.has(values.mimeType.toLowerCase())) {
+    if (requireLauncherImage && !LAUNCHER_IMAGE_TYPES.has(values.mimeType.toLowerCase())) {
         throw new Error(`${label} image for server ${serverKey} must be PNG, JPEG, or WebP`)
     }
     return {
@@ -277,17 +282,17 @@ export async function buildProjectSnapshot(connection: PoolConnection, projectId
             autoconnect: Boolean(server.autoconnect),
             sortOrder: server.sort_order,
             javaOptions: parseJson(server.java_options),
-            icon: server.icon_upload_id && server.icon_object_key ? {
+            icon: snapshotUpload(server.server_key, 'Icon', {
                 id: server.icon_upload_id,
                 objectKey: server.icon_object_key,
-                originalName: server.icon_original_name!,
-                mimeType: server.icon_mime_type!,
-                size: Number(server.icon_size),
-                md5: server.icon_md5!,
-                sha256: server.icon_sha256!
-            } : null,
+                originalName: server.icon_original_name,
+                mimeType: server.icon_mime_type,
+                size: server.icon_size,
+                md5: server.icon_md5,
+                sha256: server.icon_sha256
+            }),
             launcherUi: {
-                background: snapshotLauncherImage(server.server_key, 'Background', {
+                background: snapshotUpload(server.server_key, 'Background', {
                     id: server.hero_background_upload_id,
                     objectKey: server.hero_background_object_key,
                     originalName: server.hero_background_original_name,
@@ -295,8 +300,8 @@ export async function buildProjectSnapshot(connection: PoolConnection, projectId
                     size: server.hero_background_size,
                     md5: server.hero_background_md5,
                     sha256: server.hero_background_sha256
-                }),
-                logo: snapshotLauncherImage(server.server_key, 'Logo', {
+                }, true),
+                logo: snapshotUpload(server.server_key, 'Logo', {
                     id: server.hero_logo_upload_id,
                     objectKey: server.hero_logo_object_key,
                     originalName: server.hero_logo_original_name,
@@ -304,7 +309,7 @@ export async function buildProjectSnapshot(connection: PoolConnection, projectId
                     size: server.hero_logo_size,
                     md5: server.hero_logo_md5,
                     sha256: server.hero_logo_sha256
-                }),
+                }, true),
                 eyebrow: server.hero_eyebrow ?? '',
                 title: server.hero_title ?? '',
                 tagline: server.hero_tagline ?? '',
@@ -387,6 +392,56 @@ function launcherImageExtension(upload: SnapshotUpload): string {
         case 'image/jpeg': return '.jpg'
         case 'image/webp': return '.webp'
         default: return '.png'
+    }
+}
+
+async function verifySnapshotAsset(
+    server: SnapshotServer,
+    label: string,
+    upload: SnapshotUpload
+): Promise<void> {
+    try {
+        await verifyStoredUpload(upload.objectKey, upload)
+    } catch (error) {
+        throw snapshotAssetError(server.name, label, upload.id, error)
+    }
+}
+
+export function snapshotAssetError(
+    serverName: string,
+    label: string,
+    uploadId: string,
+    error: unknown
+): unknown {
+    if (isStorageObjectMissingError(error)) {
+        return new PermanentJobError(
+            `Server ${serverName} ${label} is missing (upload ${uploadId}); re-upload it before publishing.`
+        )
+    }
+    if (isStorageObjectIntegrityError(error)) {
+        return new PermanentJobError(
+            `Server ${serverName} ${label} does not match upload ${uploadId}; re-upload it before publishing.`
+        )
+    }
+    return error
+}
+
+export async function preflightSnapshotUploads(snapshot: ProjectSnapshot): Promise<void> {
+    for (const server of snapshot.servers) {
+        if (server.icon) {
+            await verifySnapshotAsset(server, 'icon', server.icon)
+        }
+        if (server.launcherUi.background) {
+            await verifySnapshotAsset(server, 'launcher background', server.launcherUi.background)
+        }
+        if (server.launcherUi.logo) {
+            await verifySnapshotAsset(server, 'launcher logo', server.launcherUi.logo)
+        }
+        for (const module of server.modules) {
+            if (module.upload) {
+                await verifySnapshotAsset(server, `module "${module.displayName}"`, module.upload)
+            }
+        }
     }
 }
 
@@ -615,6 +670,7 @@ export async function publishJob(job: JobRow): Promise<void> {
     const releasePublicBase = `${getConfig().rustfs.publicBaseUrl}/${releasePrefix}/`
     try {
         await heartbeat(job.id, 10)
+        await preflightSnapshotUploads(snapshot)
         await materializeSnapshot(snapshot, workspace)
         await heartbeat(job.id, 35)
         process.env.ROOT = workspace
@@ -847,7 +903,7 @@ async function claimJob(workerId: string): Promise<JobRow | undefined> {
 
 async function failJob(job: JobRow, error: unknown): Promise<void> {
     const message = error instanceof Error ? error.message : String(error)
-    const retry = job.attempts < job.max_attempts
+    const retry = shouldRetryJob(error, job.attempts, job.max_attempts)
     const delays = [30, 120, 600]
     await getPool().execute(
         `UPDATE jobs SET status = ?, available_at = TIMESTAMPADD(SECOND, ?, UTC_TIMESTAMP(3)),

@@ -6,7 +6,7 @@ async function fulfillJson(route: Route, value: unknown): Promise<void> {
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) })
 }
 
-async function mockDistribution(page: Page, ready: boolean): Promise<void> {
+async function mockDistribution(page: Page, ready: boolean, jobs: unknown[] = []): Promise<void> {
     await page.addInitScript(() => {
         localStorage.setItem('i18nextLng', 'en')
         Object.defineProperty(navigator, 'clipboard', {
@@ -34,7 +34,9 @@ async function mockDistribution(page: Page, ready: boolean): Promise<void> {
                 },
                 servers: []
             })
-        } else if (path.endsWith('/jobs') || path.endsWith('/releases')) {
+        } else if (path.endsWith('/jobs')) {
+            await fulfillJson(route, { items: jobs })
+        } else if (path.endsWith('/releases')) {
             await fulfillJson(route, { items: [] })
         } else {
             await route.fulfill({ status: 404, contentType: 'application/problem+json', body: '{"title":"Not Found"}' })
@@ -59,4 +61,14 @@ test('warns when the stable object does not match the active release', async ({ 
     await page.goto('/projects/project-1')
 
     await expect(page.getByText('Stable file mismatch')).toBeVisible()
+})
+
+test('keeps the last progress on a failed publish job', async ({ page }) => {
+    await mockDistribution(page, false, [{
+        id: 'job-1', kind: 'PUBLISH', status: 'FAILED', attempts: 1, maxAttempts: 3,
+        progress: 10, result: null, error: 'Server FF1 icon is missing', createdAt: '2026-08-17T00:00:00Z'
+    }])
+    await page.goto('/projects/project-1')
+
+    await expect(page.getByText('FAILED · 10%')).toBeVisible()
 })

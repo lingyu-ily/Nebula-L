@@ -306,7 +306,11 @@ function ReleasePanel({ project, canEdit }: { project: Project, canEdit: boolean
         <section className="card"><h2>{t('jobs')}</h2>{jobs.data?.items.map(job => <div className="timeline-row" key={job.id}>
             <span className={`job-state state-${job.status.toLowerCase()}`} />
             <div><strong>{job.kind}</strong><small>{new Date(job.createdAt).toLocaleString()} · {t('attempts')} {job.attempts}/{job.maxAttempts}</small>{job.error && <p className="error-text">{job.error}</p>}</div>
-            <span>{job.status === 'RUNNING' ? `${job.progress}%` : job.status}</span>
+            <span>{job.status === 'RUNNING'
+                ? `${job.progress}%`
+                : job.status === 'FAILED'
+                    ? `${job.status} · ${job.progress}%`
+                    : job.status}</span>
             {canEdit && job.status === 'FAILED' && <button className="text-button" onClick={() => retry.mutate(job.id)}>{t('retry')}</button>}
         </div>)}{jobs.data?.items.length === 0 && <div className="empty">{t('noRecords')}</div>}</section>
         <section className="card"><h2>{t('releases')}</h2>{releases.data?.items.map(release => <div className="timeline-row" key={release.id}>

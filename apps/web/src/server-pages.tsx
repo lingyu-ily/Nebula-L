@@ -443,6 +443,37 @@ function launcherUploadPreview(projectId: string, uploadId: string | null): stri
     return uploadId == null ? null : `/api/v1/projects/${projectId}/uploads/${uploadId}/content`
 }
 
+type ImageLoadState = 'idle' | 'loading' | 'loaded' | 'error'
+
+function useImageLoadState(source: string | null): ImageLoadState {
+    const [result, setResult] = useState<{ source: string | null, state: ImageLoadState }>({
+        source: null,
+        state: 'idle'
+    })
+    useEffect(() => {
+        if (!source) {
+            setResult({ source: null, state: 'idle' })
+            return
+        }
+        let active = true
+        const image = new Image()
+        image.onload = (): void => {
+            if (active) setResult({ source, state: 'loaded' })
+        }
+        image.onerror = (): void => {
+            if (active) setResult({ source, state: 'error' })
+        }
+        image.src = source
+        return (): void => {
+            active = false
+            image.onload = null
+            image.onerror = null
+        }
+    }, [source])
+    if (!source) return 'idle'
+    return result.source === source ? result.state : 'loading'
+}
+
 export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
     const { projectId = '', serverId = '' } = useParams()
     const { t } = useTranslation()
@@ -514,17 +545,19 @@ export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
         },
         onSuccess: () => invalidateServer(queryClient, projectId, serverId)
     })
-    const fallback = <LoadingOrError query={detail} />
-    if (!detail.data || !server) return fallback
-
-    const storedBackground = backgroundCleared
+    const storedBackground = backgroundCleared || !server
         ? null
         : launcherUploadPreview(projectId, server.launcherUi.backgroundUploadId)
-    const storedLogo = logoCleared
+    const storedLogo = logoCleared || !server
         ? null
         : launcherUploadPreview(projectId, server.launcherUi.logoUploadId)
     const backgroundPreview = backgroundFilePreview ?? storedBackground
     const logoPreview = logoFilePreview ?? storedLogo
+    const backgroundLoadState = useImageLoadState(backgroundPreview)
+    const logoLoadState = useImageLoadState(logoPreview)
+    const hasMissingImage = backgroundLoadState === 'error' || logoLoadState === 'error'
+    const fallback = <LoadingOrError query={detail} />
+    if (!detail.data || !server) return fallback
     const handleImage = (
         file: File | undefined,
         setter: (value: File | null) => void,
@@ -550,11 +583,13 @@ export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
             </div>
             <div
                 className="launcher-hero-preview"
-                style={backgroundPreview ? { backgroundImage: `url(${JSON.stringify(backgroundPreview)})` } : undefined}
+                style={backgroundLoadState === 'loaded' && backgroundPreview
+                    ? { backgroundImage: `url(${JSON.stringify(backgroundPreview)})` }
+                    : undefined}
             >
                 <div className="launcher-hero-preview-shade" />
                 <div className="launcher-hero-preview-content">
-                    {logoPreview
+                    {logoPreview && logoLoadState === 'loaded'
                         ? <img src={logoPreview} alt="" />
                         : <div className="launcher-preview-logo-placeholder">MAPLECRAFT</div>}
                     <span>{eyebrow || t('launcherFallbackEyebrow')}</span>
@@ -562,6 +597,7 @@ export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
                     <p>{tagline || server.description || t('launcherFallbackTagline')}</p>
                 </div>
                 {!backgroundPreview && <div className="launcher-preview-fallback">{t('launcherUsesDefault')}</div>}
+                {hasMissingImage && <div className="launcher-preview-missing" role="status">{t('launcherImageMissing')}</div>}
             </div>
             <form className="launcher-editor-form" onSubmit={event => {
                 event.preventDefault()
@@ -576,7 +612,11 @@ export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
                             disabled={!canEdit}
                             onChange={event => handleImage(event.target.files?.[0], setBackgroundFile, setBackgroundCleared)}
                         />
-                        <small>{backgroundPreview ? t('launcherImageConfigured') : t('launcherUsesDefault')}</small>
+                        <small className={backgroundLoadState === 'error' ? 'image-missing-text' : undefined}>
+                            {backgroundLoadState === 'error'
+                                ? t('launcherImageMissing')
+                                : backgroundPreview ? t('launcherImageConfigured') : t('launcherUsesDefault')}
+                        </small>
                         {canEdit && backgroundPreview && <button type="button" className="danger-link" onClick={() => {
                             setBackgroundFile(null)
                             setBackgroundCleared(true)
@@ -590,7 +630,11 @@ export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
                             disabled={!canEdit}
                             onChange={event => handleImage(event.target.files?.[0], setLogoFile, setLogoCleared)}
                         />
-                        <small>{logoPreview ? t('launcherImageConfigured') : t('launcherUsesDefault')}</small>
+                        <small className={logoLoadState === 'error' ? 'image-missing-text' : undefined}>
+                            {logoLoadState === 'error'
+                                ? t('launcherImageMissing')
+                                : logoPreview ? t('launcherImageConfigured') : t('launcherUsesDefault')}
+                        </small>
                         {canEdit && logoPreview && <button type="button" className="danger-link" onClick={() => {
                             setLogoFile(null)
                             setLogoCleared(true)
