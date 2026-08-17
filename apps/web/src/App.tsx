@@ -18,6 +18,7 @@ import {
 import {
     NewServerPage,
     ServerFilesPage,
+    ServerLauncherPage,
     ServerOverviewPage,
     ServerRootRedirect,
     ServerSettingsPage
@@ -428,6 +429,7 @@ export function App(): ReactNode {
         <Route path="/projects/:projectId/servers/:serverId" element={<ServerRootRedirect />} />
         <Route path="/projects/:projectId/servers/:serverId/overview" element={<ServerOverviewPage />} />
         <Route path="/projects/:projectId/servers/:serverId/settings" element={<ServerSettingsPage user={user} />} />
+        <Route path="/projects/:projectId/servers/:serverId/launcher" element={<ServerLauncherPage user={user} />} />
         <Route path="/projects/:projectId/servers/:serverId/files" element={<ServerFilesPage user={user} />} />
         <Route path="/users" element={user.role === 'ADMIN' ? <UsersPage /> : <Navigate to="/projects" replace />} />
         <Route path="/audit" element={<AuditPage />} />

@@ -59,6 +59,17 @@ export const javaOptionsSchema = z.object({
     message: 'suggestedMajor is required when supported is supplied'
 })
 
+export const launcherUiInputSchema = z.object({
+    backgroundUploadId: z.uuid().nullable().default(null),
+    logoUploadId: z.uuid().nullable().default(null),
+    eyebrow: z.string().trim().max(128).default(''),
+    title: z.string().trim().max(128).default(''),
+    tagline: z.string().trim().max(500).default(''),
+    rss: z.union([z.url(), z.literal('')]).default('')
+})
+
+export type LauncherUiInput = z.infer<typeof launcherUiInputSchema>
+
 export const serverInputSchema = z.object({
     serverKey: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/),
     name: z.string().trim().min(1).max(128),

@@ -1,10 +1,17 @@
 import { mkdirs, pathExists } from 'fs-extra/esm'
 import { lstat, readdir, readFile, writeFile } from 'fs/promises'
-import { Server, Module } from 'helios-distribution-types'
+import { Module } from 'helios-distribution-types'
 import { dirname, join, resolve as resolvePath } from 'path'
 import { URL } from 'url'
 import { VersionSegmentedRegistry } from '../../util/VersionSegmentedRegistry.js'
-import { ServerMeta, getDefaultServerMeta, ServerMetaOptions, UntrackedFilesOption } from '../../model/nebula/ServerMeta.js'
+import {
+    LauncherServer,
+    LauncherServerUi,
+    ServerMeta,
+    getDefaultServerMeta,
+    ServerMetaOptions,
+    UntrackedFilesOption
+} from '../../model/nebula/ServerMeta.js'
 import { BaseModelStructure } from './BaseModel.struct.js'
 import { FabricModStructure } from './module/FabricMod.struct.js'
 import { MiscFileStructure } from './module/File.struct.js'
@@ -20,7 +27,7 @@ export interface CreateServerResult {
     miscFileContainer: string
 }
 
-export class ServerStructure extends BaseModelStructure<Server> {
+export class ServerStructure extends BaseModelStructure<LauncherServer> {
 
     private readonly ID_REGEX = /(.+-(.+)$)/
     private readonly SERVER_META_FILE = 'servermeta.json'
@@ -38,7 +45,7 @@ export class ServerStructure extends BaseModelStructure<Server> {
         return 'ServerStructure'
     }
 
-    public async getSpecModel(): Promise<Server[]> {
+    public async getSpecModel(): Promise<LauncherServer[]> {
         if (this.resolvedModels == null) {
             this.resolvedModels = await this._doSeverRetrieval()
         }
@@ -122,9 +129,40 @@ export class ServerStructure extends BaseModelStructure<Server> {
 
     }
 
-    private async _doSeverRetrieval(): Promise<Server[]> {
+    private resolveLauncherUi(ui: LauncherServerUi | undefined, relativeServerRoot: string): LauncherServerUi | undefined {
+        if (!ui) {
+            return undefined
+        }
+        const resolveAsset = (value: string | undefined): string | undefined => {
+            if (!value) {
+                return undefined
+            }
+            const relativeAsset = join(relativeServerRoot, value).replaceAll('\\', '/')
+            return isValidUrl(value) ? value : new URL(relativeAsset, this.baseUrl).toString()
+        }
+        const hero = ui.hero
+        const background = resolveAsset(hero?.background)
+        const logo = resolveAsset(hero?.logo)
+        const resolvedHero = hero ? {
+            ...(background ? { background } : {}),
+            ...(logo ? { logo } : {}),
+            ...(hero.eyebrow ? { eyebrow: hero.eyebrow } : {}),
+            ...(hero.title ? { title: hero.title } : {}),
+            ...(hero.tagline ? { tagline: hero.tagline } : {})
+        } : undefined
+        const resolvedNews = ui.news?.rss ? { rss: ui.news.rss } : undefined
+        if ((!resolvedHero || Object.keys(resolvedHero).length === 0) && !resolvedNews) {
+            return undefined
+        }
+        return {
+            ...(resolvedHero && Object.keys(resolvedHero).length > 0 ? { hero: resolvedHero } : {}),
+            ...(resolvedNews ? { news: resolvedNews } : {})
+        }
+    }
 
-        const accumulator: Server[] = []
+    private async _doSeverRetrieval(): Promise<LauncherServer[]> {
+
+        const accumulator: LauncherServer[] = []
         const files = await readdir(this.containerDirectory)
         for (const file of files) {
             const absoluteServerRoot = resolvePath(this.containerDirectory, file)
@@ -241,6 +279,7 @@ export class ServerStructure extends BaseModelStructure<Server> {
                     mainServer: serverMeta.meta.mainServer,
                     autoconnect: serverMeta.meta.autoconnect,
                     javaOptions: serverMeta.meta.javaOptions,
+                    ...(serverMeta.meta.ui ? { ui: this.resolveLauncherUi(serverMeta.meta.ui, relativeServerRoot) } : {}),
                     modules
                 })
 

@@ -60,6 +60,14 @@ interface SnapshotServer {
     sortOrder: number
     javaOptions: unknown
     icon: SnapshotUpload | null
+    launcherUi: {
+        background: SnapshotUpload | null
+        logo: SnapshotUpload | null
+        eyebrow: string
+        title: string
+        tagline: string
+        rss: string
+    }
     untrackedRules: { appliesTo: string, pattern: string }[]
     modules: SnapshotModule[]
 }
@@ -125,6 +133,24 @@ interface ServerSnapshotRow extends RowDataPacket {
     icon_size: number | null
     icon_md5: string | null
     icon_sha256: string | null
+    hero_background_upload_id: string | null
+    hero_background_object_key: string | null
+    hero_background_original_name: string | null
+    hero_background_mime_type: string | null
+    hero_background_size: number | null
+    hero_background_md5: string | null
+    hero_background_sha256: string | null
+    hero_logo_upload_id: string | null
+    hero_logo_object_key: string | null
+    hero_logo_original_name: string | null
+    hero_logo_mime_type: string | null
+    hero_logo_size: number | null
+    hero_logo_md5: string | null
+    hero_logo_sha256: string | null
+    hero_eyebrow: string | null
+    hero_title: string | null
+    hero_tagline: string | null
+    news_rss: string | null
 }
 
 interface ModuleSnapshotRow extends RowDataPacket {
@@ -160,6 +186,41 @@ function parseJson<T>(value: T | string | null): T | null {
     return JSON.parse(value) as T
 }
 
+const LAUNCHER_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+
+function snapshotLauncherImage(
+    serverKey: string,
+    label: string,
+    values: {
+        id: string | null
+        objectKey: string | null
+        originalName: string | null
+        mimeType: string | null
+        size: number | null
+        md5: string | null
+        sha256: string | null
+    }
+): SnapshotUpload | null {
+    if (!values.id) {
+        return null
+    }
+    if (!values.objectKey || !values.originalName || !values.mimeType || values.size == null || !values.md5 || !values.sha256) {
+        throw new Error(`${label} image for server ${serverKey} is unavailable`)
+    }
+    if (!LAUNCHER_IMAGE_TYPES.has(values.mimeType.toLowerCase())) {
+        throw new Error(`${label} image for server ${serverKey} must be PNG, JPEG, or WebP`)
+    }
+    return {
+        id: values.id,
+        objectKey: values.objectKey,
+        originalName: values.originalName,
+        mimeType: values.mimeType,
+        size: Number(values.size),
+        md5: values.md5,
+        sha256: values.sha256
+    }
+}
+
 export async function buildProjectSnapshot(connection: PoolConnection, projectId: string): Promise<ProjectSnapshot> {
     const [projectRows] = await connection.query<ProjectSnapshotRow[]>('SELECT * FROM projects WHERE id = ? FOR UPDATE', [projectId])
     const project = projectRows[0]
@@ -168,8 +229,17 @@ export async function buildProjectSnapshot(connection: PoolConnection, projectId
     }
     const [serverRows] = await connection.query<ServerSnapshotRow[]>(
         `SELECT s.*, u.object_key AS icon_object_key, u.original_name AS icon_original_name,
-                u.mime_type AS icon_mime_type, u.size AS icon_size, u.md5 AS icon_md5, u.sha256 AS icon_sha256
-         FROM servers s LEFT JOIN uploads u ON u.id = s.icon_upload_id AND u.status = 'READY'
+                u.mime_type AS icon_mime_type, u.size AS icon_size, u.md5 AS icon_md5, u.sha256 AS icon_sha256,
+                bg.object_key AS hero_background_object_key, bg.original_name AS hero_background_original_name,
+                bg.mime_type AS hero_background_mime_type, bg.size AS hero_background_size,
+                bg.md5 AS hero_background_md5, bg.sha256 AS hero_background_sha256,
+                logo.object_key AS hero_logo_object_key, logo.original_name AS hero_logo_original_name,
+                logo.mime_type AS hero_logo_mime_type, logo.size AS hero_logo_size,
+                logo.md5 AS hero_logo_md5, logo.sha256 AS hero_logo_sha256
+         FROM servers s
+         LEFT JOIN uploads u ON u.id = s.icon_upload_id AND u.status = 'READY'
+         LEFT JOIN uploads bg ON bg.id = s.hero_background_upload_id AND bg.status = 'READY'
+         LEFT JOIN uploads logo ON logo.id = s.hero_logo_upload_id AND logo.status = 'READY'
          WHERE s.project_id = ? ORDER BY s.sort_order, s.name`,
         [projectId]
     )
@@ -216,6 +286,30 @@ export async function buildProjectSnapshot(connection: PoolConnection, projectId
                 md5: server.icon_md5!,
                 sha256: server.icon_sha256!
             } : null,
+            launcherUi: {
+                background: snapshotLauncherImage(server.server_key, 'Background', {
+                    id: server.hero_background_upload_id,
+                    objectKey: server.hero_background_object_key,
+                    originalName: server.hero_background_original_name,
+                    mimeType: server.hero_background_mime_type,
+                    size: server.hero_background_size,
+                    md5: server.hero_background_md5,
+                    sha256: server.hero_background_sha256
+                }),
+                logo: snapshotLauncherImage(server.server_key, 'Logo', {
+                    id: server.hero_logo_upload_id,
+                    objectKey: server.hero_logo_object_key,
+                    originalName: server.hero_logo_original_name,
+                    mimeType: server.hero_logo_mime_type,
+                    size: server.hero_logo_size,
+                    md5: server.hero_logo_md5,
+                    sha256: server.hero_logo_sha256
+                }),
+                eyebrow: server.hero_eyebrow ?? '',
+                title: server.hero_title ?? '',
+                tagline: server.hero_tagline ?? '',
+                rss: server.news_rss ?? ''
+            },
             untrackedRules: rules.filter(rule => rule.server_id === server.id).map(rule => ({
                 appliesTo: rule.applies_to,
                 pattern: rule.pattern
@@ -288,6 +382,14 @@ function getModuleRelativePath(module: SnapshotModule): string {
     return join(root, namespace(module.optionalMode), name)
 }
 
+function launcherImageExtension(upload: SnapshotUpload): string {
+    switch (upload.mimeType.toLowerCase()) {
+        case 'image/jpeg': return '.jpg'
+        case 'image/webp': return '.webp'
+        default: return '.png'
+    }
+}
+
 async function materializeSnapshot(snapshot: ProjectSnapshot, root: string): Promise<void> {
     await mkdir(join(root, 'meta'), { recursive: true })
     await writeFile(join(root, 'meta', 'distrometa.json'), JSON.stringify({
@@ -298,9 +400,27 @@ async function materializeSnapshot(snapshot: ProjectSnapshot, root: string): Pro
     }, null, 2))
     for (const server of snapshot.servers) {
         const serverRoot = join(root, 'servers', `${server.serverKey}-${server.minecraftVersion}`)
+        const backgroundPath = server.launcherUi.background
+            ? `launcher/background${launcherImageExtension(server.launcherUi.background)}`
+            : undefined
+        const logoPath = server.launcherUi.logo
+            ? `launcher/logo${launcherImageExtension(server.launcherUi.logo)}`
+            : undefined
+        const hero = {
+            ...(backgroundPath ? { background: backgroundPath } : {}),
+            ...(logoPath ? { logo: logoPath } : {}),
+            ...(server.launcherUi.eyebrow ? { eyebrow: server.launcherUi.eyebrow } : {}),
+            ...(server.launcherUi.title ? { title: server.launcherUi.title } : {}),
+            ...(server.launcherUi.tagline ? { tagline: server.launcherUi.tagline } : {})
+        }
+        const launcherUi = {
+            ...(Object.keys(hero).length > 0 ? { hero } : {}),
+            ...(server.launcherUi.rss ? { news: { rss: server.launcherUi.rss } } : {})
+        }
         await Promise.all([
             mkdir(join(serverRoot, 'files'), { recursive: true }),
-            mkdir(join(serverRoot, 'libraries'), { recursive: true })
+            mkdir(join(serverRoot, 'libraries'), { recursive: true }),
+            ...(backgroundPath || logoPath ? [mkdir(join(serverRoot, 'launcher'), { recursive: true })] : [])
         ])
         if (server.forgeVersion) {
             for (const value of ['required', 'optionalon', 'optionaloff']) {
@@ -324,7 +444,8 @@ async function materializeSnapshot(snapshot: ProjectSnapshot, root: string): Pro
                 ...(server.discord ? { discord: server.discord } : {}),
                 mainServer: server.mainServer,
                 autoconnect: server.autoconnect,
-                ...(server.javaOptions ? { javaOptions: server.javaOptions } : {})
+                ...(server.javaOptions ? { javaOptions: server.javaOptions } : {}),
+                ...(Object.keys(launcherUi).length > 0 ? { ui: launcherUi } : {})
             },
             ...(server.forgeVersion ? { forge: { version: server.forgeVersion } } : {}),
             ...(server.fabricVersion ? { fabric: { version: server.fabricVersion } } : {}),
@@ -335,6 +456,12 @@ async function materializeSnapshot(snapshot: ProjectSnapshot, root: string): Pro
                 ? extname(server.icon.originalName).toLowerCase()
                 : '.png'
             await downloadToFile(server.icon.objectKey, join(serverRoot, `icon${iconExtension}`))
+        }
+        if (server.launcherUi.background && backgroundPath) {
+            await downloadToFile(server.launcherUi.background.objectKey, join(serverRoot, ...backgroundPath.split('/')))
+        }
+        if (server.launcherUi.logo && logoPath) {
+            await downloadToFile(server.launcherUi.logo.objectKey, join(serverRoot, ...logoPath.split('/')))
         }
         for (const module of server.modules) {
             const destination = join(serverRoot, getModuleRelativePath(module))
@@ -385,6 +512,7 @@ function contentType(path: string): string {
         case '.png': return 'image/png'
         case '.jpg':
         case '.jpeg': return 'image/jpeg'
+        case '.webp': return 'image/webp'
         case '.jar': return 'application/java-archive'
         case '.zip': return 'application/zip'
         default: return 'application/octet-stream'

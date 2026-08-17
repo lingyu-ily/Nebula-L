@@ -6,7 +6,7 @@ import { writeAudit } from '../audit.js'
 import { getConfig } from '../config.js'
 import { getPool, withTransaction } from '../db/index.js'
 import { HttpError, requireCsrf, requireRole } from '../http.js'
-import { uploadStream } from '../storage.js'
+import { getStoredObject, uploadStream } from '../storage.js'
 import { auditContextFromRequest } from '../types.js'
 
 interface UploadRow extends RowDataPacket {
@@ -41,6 +41,30 @@ export async function registerUploadRoutes(app: FastifyInstance): Promise<void> 
             status: row.status,
             createdAt: row.created_at
         })) }
+    })
+
+    app.get('/api/v1/projects/:projectId/uploads/:uploadId/content', {
+        preHandler: requireRole('ADMIN', 'EDITOR', 'AUDITOR')
+    }, async (request, reply) => {
+        const { projectId, uploadId } = request.params as { projectId: string, uploadId: string }
+        const [rows] = await getPool().execute<UploadRow[]>(
+            `SELECT * FROM uploads
+             WHERE id = ? AND project_id = ? AND status = 'READY'`,
+            [uploadId, projectId]
+        )
+        const upload = rows[0]
+        if (!upload) {
+            throw new HttpError(404, 'Upload not found')
+        }
+        if (!['image/png', 'image/jpeg', 'image/webp'].includes(upload.mime_type.toLowerCase())) {
+            throw new HttpError(415, 'Upload is not a supported launcher image')
+        }
+        const stored = await getStoredObject(upload.object_key)
+        reply.type(upload.mime_type)
+        reply.header('Cache-Control', 'private, no-store')
+        reply.header('X-Content-Type-Options', 'nosniff')
+        reply.header('Content-Length', stored.contentLength ?? Number(upload.size))
+        return reply.send(stored.body)
     })
 
     app.post('/api/v1/projects/:projectId/uploads', { preHandler: requireRole('ADMIN', 'EDITOR') }, async (request, reply) => {
@@ -100,8 +124,10 @@ export async function registerUploadRoutes(app: FastifyInstance): Promise<void> 
         await withTransaction(async connection => {
             const [references] = await connection.query<RowDataPacket[]>(
                 `SELECT id FROM modules WHERE upload_id = ?
-                 UNION ALL SELECT id FROM servers WHERE icon_upload_id = ? LIMIT 1`,
-                [uploadId, uploadId]
+                 UNION ALL SELECT id FROM servers WHERE icon_upload_id = ?
+                 UNION ALL SELECT id FROM servers WHERE hero_background_upload_id = ?
+                 UNION ALL SELECT id FROM servers WHERE hero_logo_upload_id = ? LIMIT 1`,
+                [uploadId, uploadId, uploadId, uploadId]
             )
             if (references[0]) {
                 throw new HttpError(409, 'Upload is still in use')

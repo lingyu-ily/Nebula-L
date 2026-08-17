@@ -3,6 +3,7 @@ import {
     directoryInputSchema,
     isSafeFileName,
     isSafeRelativePath,
+    launcherUiInputSchema,
     modulePatchSchema,
     serverInputSchema
 } from './index.js'
@@ -36,5 +37,18 @@ describe('shared validation', () => {
             fabricVersion: '0.16.0'
         })
         expect(result.success).toBe(false)
+    })
+
+    it('validates per-server launcher content', () => {
+        expect(launcherUiInputSchema.safeParse({
+            backgroundUploadId: '9fb8ad8a-4d47-4dd8-85f7-07059f4ef4c8',
+            logoUploadId: null,
+            eyebrow: 'MAPLECRAFT SERVER',
+            title: 'Adventure World',
+            tagline: 'Build your own empire.',
+            rss: 'https://example.com/adventure/rss'
+        }).success).toBe(true)
+        expect(launcherUiInputSchema.safeParse({ rss: 'not-a-url' }).success).toBe(false)
+        expect(launcherUiInputSchema.safeParse({ eyebrow: 'x'.repeat(129) }).success).toBe(false)
     })
 })

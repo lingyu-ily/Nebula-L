@@ -58,6 +58,14 @@ export interface ManagedServer {
     address: string
     discord: null | { shortId: string, largeImageText: string, largeImageKey: string }
     iconUploadId: string | null
+    launcherUi: {
+        backgroundUploadId: string | null
+        logoUploadId: string | null
+        eyebrow: string
+        title: string
+        tagline: string
+        rss: string
+    }
     forgeVersion: string | null
     fabricVersion: string | null
     mainServer: boolean

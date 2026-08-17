@@ -382,7 +382,19 @@ Sample:
       "largeImageKey": "seal-circle"
     },
     "mainServer": false,
-    "autoconnect": true
+    "autoconnect": true,
+    "ui": {
+      "hero": {
+        "background": "launcher/background.webp",
+        "logo": "launcher/logo.png",
+        "eyebrow": "MAPLECRAFT SERVER",
+        "title": "Test Server",
+        "tagline": "A server-specific launcher description."
+      },
+      "news": {
+        "rss": "https://example.com/test-server/rss"
+      }
+    }
   },
   "forge": {
     "version": "14.23.5.2854"
@@ -390,6 +402,8 @@ Sample:
   "untrackedFiles": []
 }
 ```
+
+Launcher UI fields are optional. Hero image values may be full HTTP(S) URLs or paths relative to the server directory; relative files are published with the release and converted to public URLs. In Nebula Console, configure the same fields from the server's **Launcher page**. Empty values allow Helios to use its distribution or built-in defaults.
 
 #### Untracked Files
 

@@ -61,7 +61,7 @@ export async function migrateDatabase(): Promise<void> {
                 applied_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
             ) ENGINE=InnoDB
         `)
-        const migrations = ['0001_initial.sql', '0002_server_file_manager.sql']
+        const migrations = ['0001_initial.sql', '0002_server_file_manager.sql', '0003_launcher_ui.sql']
         for (const migration of migrations) {
             const [existing] = await connection.execute(
                 'SELECT version FROM schema_migrations WHERE version = ?',

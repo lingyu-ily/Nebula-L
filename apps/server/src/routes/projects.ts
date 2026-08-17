@@ -1,5 +1,10 @@
 import { randomUUID } from 'crypto'
-import { moduleInputSchema, projectInputSchema, serverInputSchema } from '@nebula/shared'
+import {
+    launcherUiInputSchema,
+    moduleInputSchema,
+    projectInputSchema,
+    serverInputSchema
+} from '@nebula/shared'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 import { writeAudit } from '../audit.js'
@@ -40,6 +45,12 @@ interface ServerRow extends RowDataPacket {
     address: string
     discord: unknown
     icon_upload_id: string | null
+    hero_background_upload_id: string | null
+    hero_logo_upload_id: string | null
+    hero_eyebrow: string | null
+    hero_title: string | null
+    hero_tagline: string | null
+    news_rss: string | null
     forge_version: string | null
     fabric_version: string | null
     main_server: number
@@ -103,6 +114,14 @@ function mapServer(row: ServerRow): Record<string, unknown> {
         address: row.address,
         discord: row.discord,
         iconUploadId: row.icon_upload_id,
+        launcherUi: {
+            backgroundUploadId: row.hero_background_upload_id,
+            logoUploadId: row.hero_logo_upload_id,
+            eyebrow: row.hero_eyebrow ?? '',
+            title: row.hero_title ?? '',
+            tagline: row.hero_tagline ?? '',
+            rss: row.news_rss ?? ''
+        },
         forgeVersion: row.forge_version,
         fabricVersion: row.fabric_version,
         mainServer: Boolean(row.main_server),
@@ -224,6 +243,31 @@ async function replaceUntrackedRules(
             'INSERT INTO untracked_rules (id, server_id, applies_to, pattern) VALUES (?, ?, ?, ?)',
             [randomUUID(), serverId, rule.appliesTo, rule.pattern]
         )
+    }
+}
+
+const LAUNCHER_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+
+async function assertLauncherImageUploads(
+    connection: PoolConnection,
+    projectId: string,
+    uploadIds: (string | null)[]
+): Promise<void> {
+    const ids = [...new Set(uploadIds.filter((value): value is string => value != null))]
+    if (ids.length === 0) {
+        return
+    }
+    const placeholders = ids.map(() => '?').join(', ')
+    const [rows] = await connection.query<(RowDataPacket & { id: string, mime_type: string })[]>(
+        `SELECT id, mime_type FROM uploads
+         WHERE project_id = ? AND status = 'READY' AND id IN (${placeholders}) FOR UPDATE`,
+        [projectId, ...ids]
+    )
+    if (rows.length !== ids.length) {
+        throw new HttpError(400, 'Invalid launcher image', 'Launcher images must belong to this distribution')
+    }
+    if (rows.some(row => !LAUNCHER_IMAGE_TYPES.has(row.mime_type.toLowerCase()))) {
+        throw new HttpError(400, 'Invalid launcher image', 'Launcher images must be PNG, JPEG, or WebP')
     }
 }
 
@@ -447,6 +491,57 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                 entityId: serverId,
                 projectId,
                 before: mapServer(before),
+                after: parsed.data
+            })
+        })
+        return { updated: true, draftRevision: expectedRevision + 1 }
+    })
+
+    app.patch('/api/v1/projects/:projectId/servers/:serverId/launcher-ui', {
+        preHandler: requireRole('ADMIN', 'EDITOR')
+    }, async request => {
+        requireCsrf(request)
+        const { projectId, serverId } = request.params as { projectId: string, serverId: string }
+        const expectedRevision = getRevision(request)
+        const parsed = launcherUiInputSchema.safeParse(request.body)
+        if (!parsed.success) {
+            throw new HttpError(400, 'Invalid launcher UI', undefined, parsed.error.flatten())
+        }
+        await withTransaction(async connection => {
+            await lockProject(connection, projectId, expectedRevision)
+            const [beforeRows] = await connection.query<ServerRow[]>(
+                'SELECT * FROM servers WHERE id = ? AND project_id = ? FOR UPDATE',
+                [serverId, projectId]
+            )
+            const before = beforeRows[0]
+            if (!before) {
+                throw new HttpError(404, 'Server not found')
+            }
+            await assertLauncherImageUploads(connection, projectId, [
+                parsed.data.backgroundUploadId,
+                parsed.data.logoUploadId
+            ])
+            await connection.execute(
+                `UPDATE servers SET hero_background_upload_id = ?, hero_logo_upload_id = ?, hero_eyebrow = ?,
+                 hero_title = ?, hero_tagline = ?, news_rss = ?, revision = revision + 1,
+                 updated_at = UTC_TIMESTAMP(3) WHERE id = ?`,
+                [
+                    parsed.data.backgroundUploadId,
+                    parsed.data.logoUploadId,
+                    parsed.data.eyebrow || null,
+                    parsed.data.title || null,
+                    parsed.data.tagline || null,
+                    parsed.data.rss || null,
+                    serverId
+                ]
+            )
+            await bumpProject(connection, projectId)
+            await writeAudit(connection, auditContextFromRequest(request), {
+                action: 'server.launcher_ui.updated',
+                entityType: 'server',
+                entityId: serverId,
+                projectId,
+                before: mapServer(before).launcherUi,
                 after: parsed.data
             })
         })

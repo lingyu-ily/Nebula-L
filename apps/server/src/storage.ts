@@ -130,6 +130,25 @@ export async function downloadToFile(objectKey: string, destination: string): Pr
     await pipeline(response.Body as Readable, createWriteStream(destination))
 }
 
+export async function getStoredObject(objectKey: string): Promise<{
+    body: Readable
+    contentLength?: number
+    contentType?: string
+}> {
+    const response = await getStorageClient().send(new GetObjectCommand({
+        Bucket: getConfig().rustfs.bucket,
+        Key: objectKey
+    }))
+    if (!response.Body) {
+        throw new Error(`RustFS object ${objectKey} has no body`)
+    }
+    return {
+        body: response.Body as Readable,
+        contentLength: response.ContentLength == null ? undefined : Number(response.ContentLength),
+        contentType: response.ContentType
+    }
+}
+
 async function hashFile(path: string): Promise<Omit<StoredObject, 'objectKey'>> {
     const md5 = createHash('md5')
     const sha256 = createHash('sha256')

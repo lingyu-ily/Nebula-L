@@ -1,5 +1,22 @@
 import { Server } from 'helios-distribution-types'
 
+export interface LauncherServerUi {
+    hero?: {
+        background?: string
+        logo?: string
+        eyebrow?: string
+        title?: string
+        tagline?: string
+    }
+    news?: {
+        rss?: string
+    }
+}
+
+export type LauncherServer = Server & {
+    ui?: LauncherServerUi
+}
+
 export interface UntrackedFilesOption {
     /**
      * The subdirectory these patterns will be applied to. Ex.
@@ -72,6 +89,7 @@ export interface ServerMeta {
         mainServer: Server['mainServer']
         autoconnect: Server['autoconnect']
         javaOptions?: Server['javaOptions']
+        ui?: LauncherServerUi
     }
 
     /**

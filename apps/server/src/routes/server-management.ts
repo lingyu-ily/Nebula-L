@@ -51,6 +51,12 @@ interface ServerRow extends RowDataPacket {
     address: string
     discord: unknown
     icon_upload_id: string | null
+    hero_background_upload_id: string | null
+    hero_logo_upload_id: string | null
+    hero_eyebrow: string | null
+    hero_title: string | null
+    hero_tagline: string | null
+    news_rss: string | null
     forge_version: string | null
     fabric_version: string | null
     main_server: number
@@ -124,6 +130,14 @@ function mapServer(row: ServerRow): Record<string, unknown> {
         address: row.address,
         discord: row.discord,
         iconUploadId: row.icon_upload_id,
+        launcherUi: {
+            backgroundUploadId: row.hero_background_upload_id,
+            logoUploadId: row.hero_logo_upload_id,
+            eyebrow: row.hero_eyebrow ?? '',
+            title: row.hero_title ?? '',
+            tagline: row.hero_tagline ?? '',
+            rss: row.news_rss ?? ''
+        },
         forgeVersion: row.forge_version,
         fabricVersion: row.fabric_version,
         mainServer: Boolean(row.main_server),

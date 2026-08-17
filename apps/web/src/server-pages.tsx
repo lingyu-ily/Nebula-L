@@ -85,6 +85,7 @@ function ServerHeader({ detail }: { detail: ServerDetail }): ReactNode {
         <nav className="server-tabs" aria-label={t('serverNavigation')}>
             <NavLink to={`${base}/overview`}>{t('overview')}</NavLink>
             <NavLink to={`${base}/settings`}>{t('settings')}</NavLink>
+            <NavLink to={`${base}/launcher`}>{t('launcherPage')}</NavLink>
             <NavLink to={`${base}/files`}>{t('files')}</NavLink>
         </nav>
     </>
@@ -419,6 +420,196 @@ export function ServerSettingsPage({ user }: { user: ApiUser }): ReactNode {
             >{t('deleteServer')}</button>
             <ErrorNotice error={remove.error} />
         </section>}
+    </>
+}
+
+const LAUNCHER_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+
+function useFilePreview(file: File | null): string | null {
+    const [preview, setPreview] = useState<string | null>(null)
+    useEffect(() => {
+        if (!file) {
+            setPreview(null)
+            return
+        }
+        const next = URL.createObjectURL(file)
+        setPreview(next)
+        return (): void => URL.revokeObjectURL(next)
+    }, [file])
+    return preview
+}
+
+function launcherUploadPreview(projectId: string, uploadId: string | null): string | null {
+    return uploadId == null ? null : `/api/v1/projects/${projectId}/uploads/${uploadId}/content`
+}
+
+export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
+    const { projectId = '', serverId = '' } = useParams()
+    const { t } = useTranslation()
+    const queryClient = useQueryClient()
+    const detail = useServerDetail(projectId, serverId)
+    const canEdit = user.role === 'ADMIN' || user.role === 'EDITOR'
+    const server = detail.data?.server
+    const [backgroundFile, setBackgroundFile] = useState<File | null>(null)
+    const [logoFile, setLogoFile] = useState<File | null>(null)
+    const [backgroundCleared, setBackgroundCleared] = useState(false)
+    const [logoCleared, setLogoCleared] = useState(false)
+    const [eyebrow, setEyebrow] = useState(server?.launcherUi.eyebrow ?? '')
+    const [title, setTitle] = useState(server?.launcherUi.title ?? '')
+    const [tagline, setTagline] = useState(server?.launcherUi.tagline ?? '')
+    const [rss, setRss] = useState(server?.launcherUi.rss ?? '')
+    const backgroundFilePreview = useFilePreview(backgroundFile)
+    const logoFilePreview = useFilePreview(logoFile)
+
+    useEffect(() => {
+        if (!server) return
+        setEyebrow(server.launcherUi.eyebrow)
+        setTitle(server.launcherUi.title)
+        setTagline(server.launcherUi.tagline)
+        setRss(server.launcherUi.rss)
+        setBackgroundFile(null)
+        setLogoFile(null)
+        setBackgroundCleared(false)
+        setLogoCleared(false)
+    }, [server])
+
+    const uploadImage = async (file: File): Promise<string> => {
+        if (!LAUNCHER_IMAGE_TYPES.has(file.type)) {
+            throw new Error(t('launcherImageTypeError'))
+        }
+        const body = new FormData()
+        body.append('file', file)
+        const upload = await api<{ id: string }>(`/api/v1/projects/${projectId}/uploads`, {
+            method: 'POST',
+            body
+        })
+        return upload.id
+    }
+    const mutation = useMutation({
+        mutationFn: async () => {
+            if (!detail.data) throw new Error('Server is not loaded')
+            let backgroundUploadId = backgroundCleared
+                ? null
+                : detail.data.server.launcherUi.backgroundUploadId
+            let logoUploadId = logoCleared
+                ? null
+                : detail.data.server.launcherUi.logoUploadId
+            if (backgroundFile) backgroundUploadId = await uploadImage(backgroundFile)
+            if (logoFile) logoUploadId = await uploadImage(logoFile)
+            return api<{ draftRevision: number }>(
+                `/api/v1/projects/${projectId}/servers/${serverId}/launcher-ui`,
+                {
+                    method: 'PATCH',
+                    ...jsonBody({
+                        revision: detail.data.project.draftRevision,
+                        backgroundUploadId,
+                        logoUploadId,
+                        eyebrow,
+                        title,
+                        tagline,
+                        rss
+                    })
+                }
+            )
+        },
+        onSuccess: () => invalidateServer(queryClient, projectId, serverId)
+    })
+    const fallback = <LoadingOrError query={detail} />
+    if (!detail.data || !server) return fallback
+
+    const storedBackground = backgroundCleared
+        ? null
+        : launcherUploadPreview(projectId, server.launcherUi.backgroundUploadId)
+    const storedLogo = logoCleared
+        ? null
+        : launcherUploadPreview(projectId, server.launcherUi.logoUploadId)
+    const backgroundPreview = backgroundFilePreview ?? storedBackground
+    const logoPreview = logoFilePreview ?? storedLogo
+    const handleImage = (
+        file: File | undefined,
+        setter: (value: File | null) => void,
+        clearSetter: (value: boolean) => void
+    ): void => {
+        if (!file) return
+        if (!LAUNCHER_IMAGE_TYPES.has(file.type)) {
+            window.alert(t('launcherImageTypeError'))
+            return
+        }
+        setter(file)
+        clearSetter(false)
+    }
+    return <>
+        <ServerHeader detail={detail.data} />
+        <section className="card launcher-editor-card">
+            <div className="section-heading">
+                <div>
+                    <h2>{t('launcherPage')}</h2>
+                    <p className="muted">{t('launcherPageHint')}</p>
+                </div>
+                {!canEdit && <span className="pill">{t('readOnly')}</span>}
+            </div>
+            <div
+                className="launcher-hero-preview"
+                style={backgroundPreview ? { backgroundImage: `url(${JSON.stringify(backgroundPreview)})` } : undefined}
+            >
+                <div className="launcher-hero-preview-shade" />
+                <div className="launcher-hero-preview-content">
+                    {logoPreview
+                        ? <img src={logoPreview} alt="" />
+                        : <div className="launcher-preview-logo-placeholder">MAPLECRAFT</div>}
+                    <span>{eyebrow || t('launcherFallbackEyebrow')}</span>
+                    <strong>{title || server.name}</strong>
+                    <p>{tagline || server.description || t('launcherFallbackTagline')}</p>
+                </div>
+                {!backgroundPreview && <div className="launcher-preview-fallback">{t('launcherUsesDefault')}</div>}
+            </div>
+            <form className="launcher-editor-form" onSubmit={event => {
+                event.preventDefault()
+                if (canEdit) mutation.mutate()
+            }}>
+                <div className="launcher-image-fields">
+                    <label className="launcher-image-field">
+                        <span>{t('launcherBackground')}</span>
+                        <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp"
+                            disabled={!canEdit}
+                            onChange={event => handleImage(event.target.files?.[0], setBackgroundFile, setBackgroundCleared)}
+                        />
+                        <small>{backgroundPreview ? t('launcherImageConfigured') : t('launcherUsesDefault')}</small>
+                        {canEdit && backgroundPreview && <button type="button" className="danger-link" onClick={() => {
+                            setBackgroundFile(null)
+                            setBackgroundCleared(true)
+                        }}>{t('launcherClearImage')}</button>}
+                    </label>
+                    <label className="launcher-image-field">
+                        <span>{t('launcherLogo')}</span>
+                        <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp"
+                            disabled={!canEdit}
+                            onChange={event => handleImage(event.target.files?.[0], setLogoFile, setLogoCleared)}
+                        />
+                        <small>{logoPreview ? t('launcherImageConfigured') : t('launcherUsesDefault')}</small>
+                        {canEdit && logoPreview && <button type="button" className="danger-link" onClick={() => {
+                            setLogoFile(null)
+                            setLogoCleared(true)
+                        }}>{t('launcherClearImage')}</button>}
+                    </label>
+                </div>
+                <div className="form-grid launcher-copy-fields">
+                    <label>{t('launcherEyebrow')}<input value={eyebrow} maxLength={128} disabled={!canEdit} onChange={event => setEyebrow(event.target.value)} /></label>
+                    <label>{t('launcherTitle')}<input value={title} maxLength={128} disabled={!canEdit} onChange={event => setTitle(event.target.value)} /></label>
+                    <label className="wide">{t('launcherTagline')}<textarea value={tagline} maxLength={500} disabled={!canEdit} onChange={event => setTagline(event.target.value)} /></label>
+                    <label className="wide">{t('launcherNewsRss')}<input type="url" value={rss} disabled={!canEdit} placeholder={detail.data.project.rss} onChange={event => setRss(event.target.value)} /></label>
+                </div>
+                <p className="field-hint">{t('launcherEmptyFallback')}</p>
+                <ErrorNotice error={mutation.error} />
+                {canEdit && <div className="actions">
+                    <button className="primary" disabled={mutation.isPending}>{mutation.isPending ? t('working') : t('save')}</button>
+                </div>}
+            </form>
+        </section>
     </>
 }
 
