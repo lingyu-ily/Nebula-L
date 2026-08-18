@@ -404,6 +404,7 @@ Sample:
 ```
 
 Launcher UI fields are optional. Hero image values may be full HTTP(S) URLs or paths relative to the server directory; relative files are published with the release and converted to public URLs. In Nebula Console, configure the same fields from the server's **Launcher page**. Empty values allow Helios to use its distribution or built-in defaults.
+For backward compatibility, `ui.hero.eyebrow` is the per-server label shown in the Launcher header above the Play, Mods, and Patch Notes tabs; it is not rendered above the hero logo.
 
 #### Untracked Files
 

@@ -54,10 +54,13 @@ test('edits and previews per-server launcher copy', async ({ page }) => {
     const saves = await mockLauncherPage(page)
     await page.goto('/projects/project-1/servers/server-1/launcher')
 
-    await page.getByLabel('Logo eyebrow').fill('MAPLECRAFT SERVER')
+    await page.getByLabel('Launcher header label').fill('MAPLECRAFT SERVER')
     await page.getByLabel('Hero title').fill('Adventure World')
     await page.getByLabel('Hero description').fill('Build your own empire.')
     await page.getByLabel('Server update RSS URL').fill('https://example.com/adventure/rss')
+    await expect(page.locator('.launcher-header-preview-label')).toHaveText('MAPLECRAFT SERVER')
+    await expect(page.locator('.launcher-header-preview-tabs')).toContainText('Play')
+    await expect(page.locator('.launcher-hero-preview')).not.toContainText('MAPLECRAFT SERVER')
     await expect(page.locator('.launcher-hero-preview')).toContainText('Adventure World')
     await page.getByRole('button', { name: 'Save' }).click()
 
@@ -79,4 +82,12 @@ test('shows a recoverable message when stored launcher images are missing', asyn
 
     await expect(page.locator('.launcher-preview-missing')).toHaveText('The source image is missing. Re-upload it.')
     await expect(page.getByRole('button', { name: 'Clear image', exact: true })).toHaveCount(2)
+})
+
+test('uses the launcher header fallback when the per-server label is empty', async ({ page }) => {
+    await mockLauncherPage(page)
+    await page.goto('/projects/project-1/servers/server-1/launcher')
+
+    await expect(page.locator('.launcher-header-preview-label')).toHaveText('MAPLECRAFT')
+    await expect(page.getByLabel('Launcher header label')).toHaveAttribute('maxlength', '128')
 })

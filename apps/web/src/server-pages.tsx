@@ -581,23 +581,34 @@ export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
                 </div>
                 {!canEdit && <span className="pill">{t('readOnly')}</span>}
             </div>
-            <div
-                className="launcher-hero-preview"
-                style={backgroundLoadState === 'loaded' && backgroundPreview
-                    ? { backgroundImage: `url(${JSON.stringify(backgroundPreview)})` }
-                    : undefined}
-            >
-                <div className="launcher-hero-preview-shade" />
-                <div className="launcher-hero-preview-content">
-                    {logoPreview && logoLoadState === 'loaded'
-                        ? <img src={logoPreview} alt="" />
-                        : <div className="launcher-preview-logo-placeholder">MAPLECRAFT</div>}
-                    <span>{eyebrow || t('launcherFallbackEyebrow')}</span>
-                    <strong>{title || server.name}</strong>
-                    <p>{tagline || server.description || t('launcherFallbackTagline')}</p>
+            <div className="launcher-preview-frame">
+                <div className="launcher-header-preview">
+                    <span className="launcher-header-preview-label" title={eyebrow.trim() || t('launcherFallbackEyebrow')}>
+                        {eyebrow.trim() || t('launcherFallbackEyebrow')}
+                    </span>
+                    <div className="launcher-header-preview-tabs" aria-hidden="true">
+                        <span className="active">{t('launcherPreviewPlay')}</span>
+                        <span>{t('launcherPreviewMods')}</span>
+                        <span>{t('launcherPreviewUpdates')}</span>
+                    </div>
                 </div>
-                {!backgroundPreview && <div className="launcher-preview-fallback">{t('launcherUsesDefault')}</div>}
-                {hasMissingImage && <div className="launcher-preview-missing" role="status">{t('launcherImageMissing')}</div>}
+                <div
+                    className="launcher-hero-preview"
+                    style={backgroundLoadState === 'loaded' && backgroundPreview
+                        ? { backgroundImage: `url(${JSON.stringify(backgroundPreview)})` }
+                        : undefined}
+                >
+                    <div className="launcher-hero-preview-shade" />
+                    <div className="launcher-hero-preview-content">
+                        {logoPreview && logoLoadState === 'loaded'
+                            ? <img src={logoPreview} alt="" />
+                            : <div className="launcher-preview-logo-placeholder">MAPLECRAFT</div>}
+                        <strong>{title || server.name}</strong>
+                        <p>{tagline || server.description || t('launcherFallbackTagline')}</p>
+                    </div>
+                    {!backgroundPreview && <div className="launcher-preview-fallback">{t('launcherUsesDefault')}</div>}
+                    {hasMissingImage && <div className="launcher-preview-missing" role="status">{t('launcherImageMissing')}</div>}
+                </div>
             </div>
             <form className="launcher-editor-form" onSubmit={event => {
                 event.preventDefault()
