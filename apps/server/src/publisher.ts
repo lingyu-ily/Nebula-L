@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto'
-import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'fs/promises'
+import { copyFile, mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { basename, dirname, extname, join, relative, sep } from 'path'
 import type { Distribution, Module } from 'helios-distribution-types'
@@ -14,6 +14,12 @@ import { writeAudit } from './audit.js'
 import { getConfig } from './config.js'
 import { getPool, withTransaction } from './db/index.js'
 import { PermanentJobError, shouldRetryJob } from './job-errors.js'
+import {
+    downloadExternalVideo,
+    LauncherVideoValidationError,
+    normalizeYouTubeVideoId,
+    type StagedLauncherVideo
+} from './launcher-video.js'
 import {
     copyJson,
     deleteObjects,
@@ -67,6 +73,11 @@ interface SnapshotServer {
     launcherUi: {
         background: SnapshotUpload | null
         logo: SnapshotUpload | null
+        video:
+            | { source: 'upload', upload: SnapshotUpload }
+            | { source: 'external', url: string }
+            | { source: 'youtube', url: string, videoId: string }
+            | null
         eyebrow: string
         title: string
         tagline: string
@@ -151,6 +162,15 @@ interface ServerSnapshotRow extends RowDataPacket {
     hero_logo_size: number | null
     hero_logo_md5: string | null
     hero_logo_sha256: string | null
+    hero_video_source: 'upload' | 'external' | 'youtube' | null
+    hero_video_upload_id: string | null
+    hero_video_url: string | null
+    hero_video_object_key: string | null
+    hero_video_original_name: string | null
+    hero_video_mime_type: string | null
+    hero_video_size: number | null
+    hero_video_md5: string | null
+    hero_video_sha256: string | null
     hero_eyebrow: string | null
     hero_title: string | null
     hero_tagline: string | null
@@ -191,6 +211,7 @@ function parseJson<T>(value: T | string | null): T | null {
 }
 
 const LAUNCHER_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+const LAUNCHER_VIDEO_TYPES = new Set(['video/mp4', 'video/webm'])
 
 function snapshotUpload(
     serverKey: string,
@@ -204,7 +225,7 @@ function snapshotUpload(
         md5: string | null
         sha256: string | null
     },
-    requireLauncherImage = false
+    allowedTypes?: Set<string>
 ): SnapshotUpload | null {
     if (!values.id) {
         return null
@@ -212,8 +233,8 @@ function snapshotUpload(
     if (!values.objectKey || !values.originalName || !values.mimeType || values.size == null || !values.md5 || !values.sha256) {
         throw new Error(`${label} for server ${serverKey} is unavailable`)
     }
-    if (requireLauncherImage && !LAUNCHER_IMAGE_TYPES.has(values.mimeType.toLowerCase())) {
-        throw new Error(`${label} image for server ${serverKey} must be PNG, JPEG, or WebP`)
+    if (allowedTypes && !allowedTypes.has(values.mimeType.toLowerCase())) {
+        throw new Error(`${label} for server ${serverKey} has an unsupported media type`)
     }
     return {
         id: values.id,
@@ -224,6 +245,19 @@ function snapshotUpload(
         md5: values.md5,
         sha256: values.sha256
     }
+}
+
+function requiredSnapshotUpload(
+    serverKey: string,
+    label: string,
+    values: Parameters<typeof snapshotUpload>[2],
+    allowedTypes: Set<string>
+): SnapshotUpload {
+    const upload = snapshotUpload(serverKey, label, values, allowedTypes)
+    if (!upload) {
+        throw new Error(`${label} for server ${serverKey} is unavailable`)
+    }
+    return upload
 }
 
 export async function buildProjectSnapshot(connection: PoolConnection, projectId: string): Promise<ProjectSnapshot> {
@@ -240,11 +274,15 @@ export async function buildProjectSnapshot(connection: PoolConnection, projectId
                 bg.md5 AS hero_background_md5, bg.sha256 AS hero_background_sha256,
                 logo.object_key AS hero_logo_object_key, logo.original_name AS hero_logo_original_name,
                 logo.mime_type AS hero_logo_mime_type, logo.size AS hero_logo_size,
-                logo.md5 AS hero_logo_md5, logo.sha256 AS hero_logo_sha256
+                logo.md5 AS hero_logo_md5, logo.sha256 AS hero_logo_sha256,
+                video.object_key AS hero_video_object_key, video.original_name AS hero_video_original_name,
+                video.mime_type AS hero_video_mime_type, video.size AS hero_video_size,
+                video.md5 AS hero_video_md5, video.sha256 AS hero_video_sha256
          FROM servers s
          LEFT JOIN uploads u ON u.id = s.icon_upload_id AND u.status = 'READY'
          LEFT JOIN uploads bg ON bg.id = s.hero_background_upload_id AND bg.status = 'READY'
          LEFT JOIN uploads logo ON logo.id = s.hero_logo_upload_id AND logo.status = 'READY'
+         LEFT JOIN uploads video ON video.id = s.hero_video_upload_id AND video.status = 'READY'
          WHERE s.project_id = ? ORDER BY s.sort_order, s.name`,
         [projectId]
     )
@@ -300,7 +338,7 @@ export async function buildProjectSnapshot(connection: PoolConnection, projectId
                     size: server.hero_background_size,
                     md5: server.hero_background_md5,
                     sha256: server.hero_background_sha256
-                }, true),
+                }, LAUNCHER_IMAGE_TYPES),
                 logo: snapshotUpload(server.server_key, 'Logo', {
                     id: server.hero_logo_upload_id,
                     objectKey: server.hero_logo_object_key,
@@ -309,7 +347,29 @@ export async function buildProjectSnapshot(connection: PoolConnection, projectId
                     size: server.hero_logo_size,
                     md5: server.hero_logo_md5,
                     sha256: server.hero_logo_sha256
-                }, true),
+                }, LAUNCHER_IMAGE_TYPES),
+                video: server.hero_video_source === 'upload'
+                    ? {
+                        source: 'upload',
+                        upload: requiredSnapshotUpload(server.server_key, 'Launcher video', {
+                            id: server.hero_video_upload_id,
+                            objectKey: server.hero_video_object_key,
+                            originalName: server.hero_video_original_name,
+                            mimeType: server.hero_video_mime_type,
+                            size: server.hero_video_size,
+                            md5: server.hero_video_md5,
+                            sha256: server.hero_video_sha256
+                        }, LAUNCHER_VIDEO_TYPES)
+                    }
+                    : server.hero_video_source === 'external' && server.hero_video_url
+                        ? { source: 'external', url: server.hero_video_url }
+                        : server.hero_video_source === 'youtube' && server.hero_video_url
+                            ? {
+                                source: 'youtube',
+                                url: server.hero_video_url,
+                                videoId: normalizeYouTubeVideoId(server.hero_video_url)
+                            }
+                            : null,
                 eyebrow: server.hero_eyebrow ?? '',
                 title: server.hero_title ?? '',
                 tagline: server.hero_tagline ?? '',
@@ -437,6 +497,9 @@ export async function preflightSnapshotUploads(snapshot: ProjectSnapshot): Promi
         if (server.launcherUi.logo) {
             await verifySnapshotAsset(server, 'launcher logo', server.launcherUi.logo)
         }
+        if (server.launcherUi.video?.source === 'upload') {
+            await verifySnapshotAsset(server, 'launcher video', server.launcherUi.video.upload)
+        }
         for (const module of server.modules) {
             if (module.upload) {
                 await verifySnapshotAsset(server, `module "${module.displayName}"`, module.upload)
@@ -445,84 +508,163 @@ export async function preflightSnapshotUploads(snapshot: ProjectSnapshot): Promi
     }
 }
 
+interface MaterializedLauncherVideo {
+    relativePath?: string
+    descriptor: {
+        type: 'file'
+        url: string
+        sha256: string
+        size: number
+        contentType: 'video/mp4' | 'video/webm'
+    } | {
+        type: 'youtube'
+        videoId: string
+    }
+    upload?: SnapshotUpload
+    staged?: StagedLauncherVideo
+}
+
+function launcherVideoExtension(mimeType: string): '.mp4' | '.webm' {
+    return mimeType.toLowerCase() === 'video/webm' ? '.webm' : '.mp4'
+}
+
+async function prepareLauncherVideo(server: SnapshotServer): Promise<MaterializedLauncherVideo | null> {
+    const video = server.launcherUi.video
+    if (!video) {
+        return null
+    }
+    if (video.source === 'youtube') {
+        return { descriptor: { type: 'youtube', videoId: video.videoId } }
+    }
+    if (video.source === 'upload') {
+        const relativePath = `launcher/video${launcherVideoExtension(video.upload.mimeType)}`
+        return {
+            relativePath,
+            upload: video.upload,
+            descriptor: {
+                type: 'file',
+                url: relativePath,
+                sha256: video.upload.sha256,
+                size: video.upload.size,
+                contentType: video.upload.mimeType.toLowerCase() as 'video/mp4' | 'video/webm'
+            }
+        }
+    }
+    try {
+        const staged = await downloadExternalVideo(video.url, getConfig().maxUploadBytes)
+        const relativePath = `launcher/video${staged.extension}`
+        return {
+            relativePath,
+            staged,
+            descriptor: {
+                type: 'file',
+                url: relativePath,
+                sha256: staged.sha256,
+                size: staged.size,
+                contentType: staged.contentType
+            }
+        }
+    } catch (error) {
+        if (error instanceof LauncherVideoValidationError) {
+            throw new PermanentJobError(`Server ${server.name} launcher video is invalid: ${error.message}`)
+        }
+        throw error
+    }
+}
+
 async function materializeSnapshot(snapshot: ProjectSnapshot, root: string): Promise<void> {
-    await mkdir(join(root, 'meta'), { recursive: true })
-    await writeFile(join(root, 'meta', 'distrometa.json'), JSON.stringify({
-        meta: {
-            rss: snapshot.rss,
-            ...(snapshot.discord ? { discord: snapshot.discord } : {})
-        }
-    }, null, 2))
-    for (const server of snapshot.servers) {
-        const serverRoot = join(root, 'servers', `${server.serverKey}-${server.minecraftVersion}`)
-        const backgroundPath = server.launcherUi.background
-            ? `launcher/background${launcherImageExtension(server.launcherUi.background)}`
-            : undefined
-        const logoPath = server.launcherUi.logo
-            ? `launcher/logo${launcherImageExtension(server.launcherUi.logo)}`
-            : undefined
-        const hero = {
-            ...(backgroundPath ? { background: backgroundPath } : {}),
-            ...(logoPath ? { logo: logoPath } : {}),
-            ...(server.launcherUi.eyebrow ? { eyebrow: server.launcherUi.eyebrow } : {}),
-            ...(server.launcherUi.title ? { title: server.launcherUi.title } : {}),
-            ...(server.launcherUi.tagline ? { tagline: server.launcherUi.tagline } : {})
-        }
-        const launcherUi = {
-            ...(Object.keys(hero).length > 0 ? { hero } : {}),
-            ...(server.launcherUi.rss ? { news: { rss: server.launcherUi.rss } } : {})
-        }
-        await Promise.all([
-            mkdir(join(serverRoot, 'files'), { recursive: true }),
-            mkdir(join(serverRoot, 'libraries'), { recursive: true }),
-            ...(backgroundPath || logoPath ? [mkdir(join(serverRoot, 'launcher'), { recursive: true })] : [])
-        ])
-        if (server.forgeVersion) {
-            for (const value of ['required', 'optionalon', 'optionaloff']) {
-                await mkdir(join(serverRoot, 'forgemods', value), { recursive: true })
-            }
-        }
-        if (server.fabricVersion) {
-            for (const value of ['required', 'optionalon', 'optionaloff']) {
-                await mkdir(join(serverRoot, 'fabricmods', value), { recursive: true })
-            }
-        }
-        const untrackedFiles = Object.entries(Object.groupBy(server.untrackedRules, rule => rule.appliesTo))
-            .map(([appliesTo, values]) => ({ appliesTo: [appliesTo], patterns: values!.map(value => value.pattern) }))
-        await writeFile(join(serverRoot, 'servermeta.json'), JSON.stringify({
+    const stagedVideos: StagedLauncherVideo[] = []
+    try {
+        await mkdir(join(root, 'meta'), { recursive: true })
+        await writeFile(join(root, 'meta', 'distrometa.json'), JSON.stringify({
             meta: {
-                version: server.serverVersion,
-                name: server.name,
-                description: server.description,
-                icon: '',
-                address: server.address,
-                ...(server.discord ? { discord: server.discord } : {}),
-                mainServer: server.mainServer,
-                autoconnect: server.autoconnect,
-                ...(server.javaOptions ? { javaOptions: server.javaOptions } : {}),
-                ...(Object.keys(launcherUi).length > 0 ? { ui: launcherUi } : {})
-            },
-            ...(server.forgeVersion ? { forge: { version: server.forgeVersion } } : {}),
-            ...(server.fabricVersion ? { fabric: { version: server.fabricVersion } } : {}),
-            untrackedFiles
+                rss: snapshot.rss,
+                ...(snapshot.discord ? { discord: snapshot.discord } : {})
+            }
         }, null, 2))
-        if (server.icon) {
-            const iconExtension = ['.png', '.jpg', '.jpeg'].includes(extname(server.icon.originalName).toLowerCase())
-                ? extname(server.icon.originalName).toLowerCase()
-                : '.png'
-            await downloadToFile(server.icon.objectKey, join(serverRoot, `icon${iconExtension}`))
+        for (const server of snapshot.servers) {
+            const serverRoot = join(root, 'servers', `${server.serverKey}-${server.minecraftVersion}`)
+            const video = await prepareLauncherVideo(server)
+            if (video?.staged) {
+                stagedVideos.push(video.staged)
+            }
+            const backgroundPath = server.launcherUi.background
+                ? `launcher/background${launcherImageExtension(server.launcherUi.background)}`
+                : undefined
+            const logoPath = server.launcherUi.logo
+                ? `launcher/logo${launcherImageExtension(server.launcherUi.logo)}`
+                : undefined
+            const hero = {
+                ...(backgroundPath ? { background: backgroundPath } : {}),
+                ...(logoPath ? { logo: logoPath } : {}),
+                ...(video ? { video: video.descriptor } : {}),
+                ...(server.launcherUi.eyebrow ? { eyebrow: server.launcherUi.eyebrow } : {}),
+                ...(server.launcherUi.title ? { title: server.launcherUi.title } : {}),
+                ...(server.launcherUi.tagline ? { tagline: server.launcherUi.tagline } : {})
+            }
+            const launcherUi = {
+                ...(Object.keys(hero).length > 0 ? { hero } : {}),
+                ...(server.launcherUi.rss ? { news: { rss: server.launcherUi.rss } } : {})
+            }
+            await Promise.all([
+                mkdir(join(serverRoot, 'files'), { recursive: true }),
+                mkdir(join(serverRoot, 'libraries'), { recursive: true }),
+                ...(backgroundPath || logoPath || video?.relativePath ? [mkdir(join(serverRoot, 'launcher'), { recursive: true })] : [])
+            ])
+            if (server.forgeVersion) {
+                for (const value of ['required', 'optionalon', 'optionaloff']) {
+                    await mkdir(join(serverRoot, 'forgemods', value), { recursive: true })
+                }
+            }
+            if (server.fabricVersion) {
+                for (const value of ['required', 'optionalon', 'optionaloff']) {
+                    await mkdir(join(serverRoot, 'fabricmods', value), { recursive: true })
+                }
+            }
+            const untrackedFiles = Object.entries(Object.groupBy(server.untrackedRules, rule => rule.appliesTo))
+                .map(([appliesTo, values]) => ({ appliesTo: [appliesTo], patterns: values!.map(value => value.pattern) }))
+            await writeFile(join(serverRoot, 'servermeta.json'), JSON.stringify({
+                meta: {
+                    version: server.serverVersion,
+                    name: server.name,
+                    description: server.description,
+                    icon: '',
+                    address: server.address,
+                    ...(server.discord ? { discord: server.discord } : {}),
+                    mainServer: server.mainServer,
+                    autoconnect: server.autoconnect,
+                    ...(server.javaOptions ? { javaOptions: server.javaOptions } : {}),
+                    ...(Object.keys(launcherUi).length > 0 ? { ui: launcherUi } : {})
+                },
+                ...(server.forgeVersion ? { forge: { version: server.forgeVersion } } : {}),
+                ...(server.fabricVersion ? { fabric: { version: server.fabricVersion } } : {}),
+                untrackedFiles
+            }, null, 2))
+            if (server.icon) {
+                const iconExtension = ['.png', '.jpg', '.jpeg'].includes(extname(server.icon.originalName).toLowerCase())
+                    ? extname(server.icon.originalName).toLowerCase()
+                    : '.png'
+                await downloadToFile(server.icon.objectKey, join(serverRoot, `icon${iconExtension}`))
+            }
+            if (server.launcherUi.background && backgroundPath) {
+                await downloadToFile(server.launcherUi.background.objectKey, join(serverRoot, ...backgroundPath.split('/')))
+            }
+            if (server.launcherUi.logo && logoPath) {
+                await downloadToFile(server.launcherUi.logo.objectKey, join(serverRoot, ...logoPath.split('/')))
+            }
+            if (video?.relativePath && video.upload) {
+                await downloadToFile(video.upload.objectKey, join(serverRoot, ...video.relativePath.split('/')))
+            } else if (video?.relativePath && video.staged) {
+                await copyFile(video.staged.path, join(serverRoot, ...video.relativePath.split('/')))
+            }
+            for (const module of server.modules) {
+                const destination = join(serverRoot, getModuleRelativePath(module))
+                await mkdir(dirname(destination), { recursive: true })
+                await downloadToFile(module.upload!.objectKey, destination)
+            }
         }
-        if (server.launcherUi.background && backgroundPath) {
-            await downloadToFile(server.launcherUi.background.objectKey, join(serverRoot, ...backgroundPath.split('/')))
-        }
-        if (server.launcherUi.logo && logoPath) {
-            await downloadToFile(server.launcherUi.logo.objectKey, join(serverRoot, ...logoPath.split('/')))
-        }
-        for (const module of server.modules) {
-            const destination = join(serverRoot, getModuleRelativePath(module))
-            await mkdir(dirname(destination), { recursive: true })
-            await downloadToFile(module.upload!.objectKey, destination)
-        }
+    } finally {
+        await Promise.all(stagedVideos.map(video => rm(video.directory, { recursive: true, force: true })))
     }
 }
 
@@ -568,6 +710,8 @@ function contentType(path: string): string {
         case '.jpg':
         case '.jpeg': return 'image/jpeg'
         case '.webp': return 'image/webp'
+        case '.mp4': return 'video/mp4'
+        case '.webm': return 'video/webm'
         case '.jar': return 'application/java-archive'
         case '.zip': return 'application/zip'
         default: return 'application/octet-stream'

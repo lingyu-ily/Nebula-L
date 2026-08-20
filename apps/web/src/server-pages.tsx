@@ -424,6 +424,28 @@ export function ServerSettingsPage({ user }: { user: ApiUser }): ReactNode {
 }
 
 const LAUNCHER_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+const LAUNCHER_VIDEO_TYPES = new Set(['video/mp4', 'video/webm'])
+
+type LauncherVideoSource = '' | 'upload' | 'external' | 'youtube'
+
+function youtubeVideoId(value: string): string | null {
+    try {
+        const url = new URL(value)
+        if (url.protocol !== 'https:') return null
+        const host = url.hostname.toLowerCase().replace(/^www\./, '')
+        const segments = url.pathname.split('/').filter(Boolean)
+        const id = host === 'youtu.be'
+            ? segments[0]
+            : ['youtube.com', 'm.youtube.com', 'youtube-nocookie.com'].includes(host)
+                ? url.pathname === '/watch'
+                    ? url.searchParams.get('v')
+                    : ['shorts', 'embed'].includes(segments[0] ?? '') ? segments[1] : null
+                : null
+        return id && /^[A-Za-z0-9_-]{11}$/.test(id) ? id : null
+    } catch {
+        return null
+    }
+}
 
 function useFilePreview(file: File | null): string | null {
     const [preview, setPreview] = useState<string | null>(null)
@@ -483,6 +505,12 @@ export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
     const server = detail.data?.server
     const [backgroundFile, setBackgroundFile] = useState<File | null>(null)
     const [logoFile, setLogoFile] = useState<File | null>(null)
+    const [videoFile, setVideoFile] = useState<File | null>(null)
+    const [videoSource, setVideoSource] = useState<LauncherVideoSource>(server?.launcherUi.video?.source ?? '')
+    const [videoUrl, setVideoUrl] = useState(server?.launcherUi.video && server.launcherUi.video.source !== 'upload' ? server.launcherUi.video.url : '')
+    const [previewPlaying, setPreviewPlaying] = useState(true)
+    const [previewMuted, setPreviewMuted] = useState(true)
+    const [videoPreviewError, setVideoPreviewError] = useState(false)
     const [backgroundCleared, setBackgroundCleared] = useState(false)
     const [logoCleared, setLogoCleared] = useState(false)
     const [eyebrow, setEyebrow] = useState(server?.launcherUi.eyebrow ?? '')
@@ -491,6 +519,9 @@ export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
     const [rss, setRss] = useState(server?.launcherUi.rss ?? '')
     const backgroundFilePreview = useFilePreview(backgroundFile)
     const logoFilePreview = useFilePreview(logoFile)
+    const videoFilePreview = useFilePreview(videoFile)
+    const videoRef = useRef<HTMLVideoElement | null>(null)
+    const youtubeRef = useRef<HTMLIFrameElement | null>(null)
 
     useEffect(() => {
         if (!server) return
@@ -500,6 +531,12 @@ export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
         setRss(server.launcherUi.rss)
         setBackgroundFile(null)
         setLogoFile(null)
+        setVideoFile(null)
+        setVideoSource(server.launcherUi.video?.source ?? '')
+        setVideoUrl(server.launcherUi.video && server.launcherUi.video.source !== 'upload' ? server.launcherUi.video.url : '')
+        setPreviewPlaying(true)
+        setPreviewMuted(true)
+        setVideoPreviewError(false)
         setBackgroundCleared(false)
         setLogoCleared(false)
     }, [server])
@@ -507,6 +544,18 @@ export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
     const uploadImage = async (file: File): Promise<string> => {
         if (!LAUNCHER_IMAGE_TYPES.has(file.type)) {
             throw new Error(t('launcherImageTypeError'))
+        }
+        const body = new FormData()
+        body.append('file', file)
+        const upload = await api<{ id: string }>(`/api/v1/projects/${projectId}/uploads`, {
+            method: 'POST',
+            body
+        })
+        return upload.id
+    }
+    const uploadVideo = async (file: File): Promise<string> => {
+        if (!LAUNCHER_VIDEO_TYPES.has(file.type)) {
+            throw new Error(t('launcherVideoTypeError'))
         }
         const body = new FormData()
         body.append('file', file)
@@ -527,6 +576,18 @@ export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
                 : detail.data.server.launcherUi.logoUploadId
             if (backgroundFile) backgroundUploadId = await uploadImage(backgroundFile)
             if (logoFile) logoUploadId = await uploadImage(logoFile)
+            let video: ManagedServer['launcherUi']['video'] = null
+            if (videoSource === 'upload') {
+                let uploadId = detail.data.server.launcherUi.video?.source === 'upload'
+                    ? detail.data.server.launcherUi.video.uploadId
+                    : null
+                if (videoFile) uploadId = await uploadVideo(videoFile)
+                if (!uploadId) throw new Error(t('launcherVideoFileRequired'))
+                video = { source: 'upload', uploadId }
+            } else if (videoSource === 'external' || videoSource === 'youtube') {
+                if (!videoUrl.trim()) throw new Error(t('launcherVideoUrlRequired'))
+                video = { source: videoSource, url: videoUrl.trim() }
+            }
             return api<{ draftRevision: number }>(
                 `/api/v1/projects/${projectId}/servers/${serverId}/launcher-ui`,
                 {
@@ -535,6 +596,7 @@ export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
                         revision: detail.data.project.draftRevision,
                         backgroundUploadId,
                         logoUploadId,
+                        video,
                         eyebrow,
                         title,
                         tagline,
@@ -551,11 +613,43 @@ export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
     const storedLogo = logoCleared || !server
         ? null
         : launcherUploadPreview(projectId, server.launcherUi.logoUploadId)
+    const storedVideo = !server || videoSource !== 'upload' || server.launcherUi.video?.source !== 'upload'
+        ? null
+        : launcherUploadPreview(projectId, server.launcherUi.video.uploadId)
     const backgroundPreview = backgroundFilePreview ?? storedBackground
     const logoPreview = logoFilePreview ?? storedLogo
+    const videoPreview = videoSource === 'upload'
+        ? videoFilePreview ?? storedVideo
+        : videoSource === 'external' ? videoUrl.trim() || null : null
+    const youtubeId = videoSource === 'youtube' ? youtubeVideoId(videoUrl.trim()) : null
     const backgroundLoadState = useImageLoadState(backgroundPreview)
     const logoLoadState = useImageLoadState(logoPreview)
     const hasMissingImage = backgroundLoadState === 'error' || logoLoadState === 'error'
+    const hasVideo = Boolean(videoPreview || youtubeId)
+    useEffect(() => {
+        setVideoPreviewError(false)
+    }, [videoPreview, youtubeId])
+    useEffect(() => {
+        const video = videoRef.current
+        if (video) {
+            video.muted = previewMuted
+            if (previewPlaying) {
+                void video.play().catch(() => setVideoPreviewError(true))
+            } else {
+                video.pause()
+            }
+        }
+        const frame = youtubeRef.current
+        if (frame?.contentWindow) {
+            const command = (func: string): void => frame.contentWindow?.postMessage(JSON.stringify({
+                event: 'command',
+                func,
+                args: []
+            }), 'https://www.youtube.com')
+            command(previewMuted ? 'mute' : 'unMute')
+            command(previewPlaying ? 'playVideo' : 'pauseVideo')
+        }
+    }, [previewMuted, previewPlaying, videoPreview, youtubeId])
     const fallback = <LoadingOrError query={detail} />
     if (!detail.data || !server) return fallback
     const handleImage = (
@@ -570,6 +664,15 @@ export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
         }
         setter(file)
         clearSetter(false)
+    }
+    const handleVideo = (file: File | undefined): void => {
+        if (!file) return
+        if (!LAUNCHER_VIDEO_TYPES.has(file.type)) {
+            window.alert(t('launcherVideoTypeError'))
+            return
+        }
+        setVideoFile(file)
+        setVideoPreviewError(false)
     }
     return <>
         <ServerHeader detail={detail.data} />
@@ -598,6 +701,24 @@ export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
                         ? { backgroundImage: `url(${JSON.stringify(backgroundPreview)})` }
                         : undefined}
                 >
+                    {videoPreview && <video
+                        ref={videoRef}
+                        className={`launcher-hero-preview-video${previewPlaying ? ' is-playing' : ''}`}
+                        src={videoPreview}
+                        muted={previewMuted}
+                        loop
+                        playsInline
+                        autoPlay={previewPlaying}
+                        onCanPlay={() => setVideoPreviewError(false)}
+                        onError={() => setVideoPreviewError(true)}
+                    />}
+                    {youtubeId && <iframe
+                        ref={youtubeRef}
+                        className={`launcher-hero-preview-video${previewPlaying ? ' is-playing' : ''}`}
+                        src={`https://www.youtube.com/embed/${youtubeId}?enablejsapi=1&autoplay=1&mute=1&loop=1&playlist=${youtubeId}&controls=0&playsinline=1&origin=${encodeURIComponent(window.location.origin)}`}
+                        title={t('launcherVideoPreview')}
+                        allow="autoplay; encrypted-media"
+                    />}
                     <div className="launcher-hero-preview-shade" />
                     <div className="launcher-hero-preview-content">
                         {logoPreview && logoLoadState === 'loaded'
@@ -608,6 +729,21 @@ export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
                     </div>
                     {!backgroundPreview && <div className="launcher-preview-fallback">{t('launcherUsesDefault')}</div>}
                     {hasMissingImage && <div className="launcher-preview-missing" role="status">{t('launcherImageMissing')}</div>}
+                    {videoPreviewError && <div className="launcher-preview-missing" role="status">{t('launcherVideoPreviewError')}</div>}
+                    {hasVideo && <div className="launcher-preview-media-controls">
+                        <button
+                            type="button"
+                            aria-label={previewPlaying ? t('launcherPauseVideo') : t('launcherPlayVideo')}
+                            aria-pressed={previewPlaying}
+                            onClick={() => setPreviewPlaying(value => !value)}
+                        >{previewPlaying ? 'Ⅱ' : '▶'}</button>
+                        <button
+                            type="button"
+                            aria-label={previewMuted ? t('launcherUnmuteVideo') : t('launcherMuteVideo')}
+                            aria-pressed={!previewMuted}
+                            onClick={() => setPreviewMuted(value => !value)}
+                        >{previewMuted ? '🔇' : '🔊'}</button>
+                    </div>}
                 </div>
             </div>
             <form className="launcher-editor-form" onSubmit={event => {
@@ -651,6 +787,60 @@ export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
                             setLogoCleared(true)
                         }}>{t('launcherClearImage')}</button>}
                     </label>
+                </div>
+                <div className="launcher-video-field">
+                    <label>
+                        <span>{t('launcherVideo')}</span>
+                        <select
+                            value={videoSource}
+                            disabled={!canEdit}
+                            onChange={event => {
+                                const source = event.target.value as LauncherVideoSource
+                                const existingVideo = server.launcherUi.video
+                                const existingUrl = existingVideo && existingVideo.source !== 'upload'
+                                    ? existingVideo.url
+                                    : ''
+                                setVideoSource(source)
+                                setVideoFile(null)
+                                setVideoUrl(source === existingVideo?.source && source !== 'upload'
+                                    ? existingUrl
+                                    : '')
+                                setVideoPreviewError(false)
+                            }}
+                        >
+                            <option value="">{t('launcherVideoNone')}</option>
+                            <option value="upload">{t('launcherVideoUpload')}</option>
+                            <option value="external">{t('launcherVideoExternal')}</option>
+                            <option value="youtube">{t('launcherVideoYouTube')}</option>
+                        </select>
+                    </label>
+                    {videoSource === 'upload' && <label>
+                        <span>{t('chooseFile')}</span>
+                        <input
+                            type="file"
+                            accept="video/mp4,video/webm"
+                            disabled={!canEdit}
+                            onChange={event => handleVideo(event.target.files?.[0])}
+                        />
+                        <small>{videoFile?.name ?? (storedVideo ? t('launcherVideoConfigured') : t('launcherVideoFileRequired'))}</small>
+                    </label>}
+                    {(videoSource === 'external' || videoSource === 'youtube') && <label className="wide">
+                        <span>{videoSource === 'youtube' ? t('launcherVideoYouTubeUrl') : t('launcherVideoExternalUrl')}</span>
+                        <input
+                            type="url"
+                            value={videoUrl}
+                            disabled={!canEdit}
+                            placeholder={videoSource === 'youtube' ? 'https://www.youtube.com/watch?v=…' : 'https://cdn.example.com/hero.mp4'}
+                            onChange={event => setVideoUrl(event.target.value)}
+                        />
+                        <small>{videoSource === 'youtube' ? t('launcherVideoYouTubeHint') : t('launcherVideoExternalHint')}</small>
+                    </label>}
+                    {videoSource && canEdit && <button type="button" className="danger-link" onClick={() => {
+                        setVideoSource('')
+                        setVideoFile(null)
+                        setVideoUrl('')
+                        setVideoPreviewError(false)
+                    }}>{t('launcherClearVideo')}</button>}
                 </div>
                 <div className="form-grid launcher-copy-fields">
                     <label>{t('launcherEyebrow')}<input value={eyebrow} maxLength={128} disabled={!canEdit} onChange={event => setEyebrow(event.target.value)} /></label>

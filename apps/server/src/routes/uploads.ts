@@ -22,6 +22,33 @@ interface UploadRow extends RowDataPacket {
     created_at: Date
 }
 
+function parseByteRange(header: string | undefined, size: number): { start: number, end: number } | null | false {
+    if (!header) {
+        return null
+    }
+    const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim())
+    if (!match || (!match[1] && !match[2])) {
+        return false
+    }
+    let start: number
+    let end: number
+    if (!match[1]) {
+        const suffix = Number(match[2])
+        if (!Number.isInteger(suffix) || suffix <= 0) {
+            return false
+        }
+        start = Math.max(0, size - suffix)
+        end = size - 1
+    } else {
+        start = Number(match[1])
+        end = match[2] ? Number(match[2]) : size - 1
+    }
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || start >= size || end < start) {
+        return false
+    }
+    return { start, end: Math.min(end, size - 1) }
+}
+
 export async function registerUploadRoutes(app: FastifyInstance): Promise<void> {
     app.get('/api/v1/projects/:projectId/uploads', { preHandler: requireRole('ADMIN', 'EDITOR', 'AUDITOR') }, async request => {
         const { projectId } = request.params as { projectId: string }
@@ -56,14 +83,30 @@ export async function registerUploadRoutes(app: FastifyInstance): Promise<void> 
         if (!upload) {
             throw new HttpError(404, 'Upload not found')
         }
-        if (!['image/png', 'image/jpeg', 'image/webp'].includes(upload.mime_type.toLowerCase())) {
-            throw new HttpError(415, 'Upload is not a supported launcher image')
+        if (!['image/png', 'image/jpeg', 'image/webp', 'video/mp4', 'video/webm'].includes(upload.mime_type.toLowerCase())) {
+            throw new HttpError(415, 'Upload is not supported Launcher media')
         }
-        const stored = await getStoredObject(upload.object_key)
+        const size = Number(upload.size)
+        const range = parseByteRange(request.headers.range, size)
+        if (range === false) {
+            reply.code(416)
+            reply.header('Content-Range', `bytes */${size}`)
+            reply.header('Accept-Ranges', 'bytes')
+            return reply.send()
+        }
+        const rangeHeader = range ? `bytes=${range.start}-${range.end}` : undefined
+        const stored = await getStoredObject(upload.object_key, rangeHeader)
         reply.type(upload.mime_type)
         reply.header('Cache-Control', 'private, no-store')
         reply.header('X-Content-Type-Options', 'nosniff')
-        reply.header('Content-Length', stored.contentLength ?? Number(upload.size))
+        reply.header('Accept-Ranges', 'bytes')
+        if (range) {
+            reply.code(206)
+            reply.header('Content-Range', stored.contentRange ?? `bytes ${range.start}-${range.end}/${size}`)
+            reply.header('Content-Length', stored.contentLength ?? range.end - range.start + 1)
+        } else {
+            reply.header('Content-Length', stored.contentLength ?? size)
+        }
         return reply.send(stored.body)
     })
 
@@ -131,8 +174,9 @@ export async function registerUploadRoutes(app: FastifyInstance): Promise<void> 
                 `SELECT id FROM modules WHERE upload_id = ?
                  UNION ALL SELECT id FROM servers WHERE icon_upload_id = ?
                  UNION ALL SELECT id FROM servers WHERE hero_background_upload_id = ?
-                 UNION ALL SELECT id FROM servers WHERE hero_logo_upload_id = ? LIMIT 1`,
-                [uploadId, uploadId, uploadId, uploadId]
+                 UNION ALL SELECT id FROM servers WHERE hero_logo_upload_id = ?
+                 UNION ALL SELECT id FROM servers WHERE hero_video_upload_id = ? LIMIT 1`,
+                [uploadId, uploadId, uploadId, uploadId, uploadId]
             )
             if (references[0]) {
                 throw new HttpError(409, 'Upload is still in use')

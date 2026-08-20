@@ -61,6 +61,11 @@ export interface ManagedServer {
     launcherUi: {
         backgroundUploadId: string | null
         logoUploadId: string | null
+        video:
+            | null
+            | { source: 'upload', uploadId: string }
+            | { source: 'external', url: string }
+            | { source: 'youtube', url: string }
         eyebrow: string
         title: string
         tagline: string

@@ -237,14 +237,17 @@ export async function downloadToFile(objectKey: string, destination: string): Pr
     await pipeline(response.Body as Readable, createWriteStream(destination))
 }
 
-export async function getStoredObject(objectKey: string): Promise<{
+export async function getStoredObject(objectKey: string, range?: string): Promise<{
     body: Readable
     contentLength?: number
     contentType?: string
+    contentRange?: string
+    acceptRanges?: string
 }> {
     const response = await getStorageClient().send(new GetObjectCommand({
         Bucket: getConfig().rustfs.bucket,
-        Key: objectKey
+        Key: objectKey,
+        ...(range ? { Range: range } : {})
     }))
     if (!response.Body) {
         throw new Error(`RustFS object ${objectKey} has no body`)
@@ -252,7 +255,9 @@ export async function getStoredObject(objectKey: string): Promise<{
     return {
         body: response.Body as Readable,
         contentLength: response.ContentLength == null ? undefined : Number(response.ContentLength),
-        contentType: response.ContentType
+        contentType: response.ContentType,
+        contentRange: response.ContentRange,
+        acceptRanges: response.AcceptRanges
     }
 }
 

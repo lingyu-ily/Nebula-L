@@ -31,6 +31,7 @@ async function mockLauncherPage(page: Page, missingImages = false): Promise<unkn
                     launcherUi: {
                         backgroundUploadId: missingImages ? 'missing-background' : null,
                         logoUploadId: missingImages ? 'missing-logo' : null,
+                        video: null,
                         eyebrow: '', title: '', tagline: '', rss: ''
                     }
                 },
@@ -73,6 +74,21 @@ test('edits and previews per-server launcher copy', async ({ page }) => {
         title: 'Adventure World',
         tagline: 'Build your own empire.',
         rss: 'https://example.com/adventure/rss'
+    })
+})
+
+test('saves and previews an external launcher video source', async ({ page }) => {
+    const saves = await mockLauncherPage(page)
+    await page.goto('/projects/project-1/servers/server-1/launcher')
+
+    await page.getByLabel('Hero video').selectOption('external')
+    await page.getByLabel('Public video URL').fill('https://cdn.example.com/hero.webm')
+    await expect(page.locator('video.launcher-hero-preview-video')).toHaveAttribute('src', 'https://cdn.example.com/hero.webm')
+    await page.getByRole('button', { name: 'Save' }).click()
+
+    await expect.poll(() => saves.length).toBe(1)
+    expect(saves[0]).toMatchObject({
+        video: { source: 'external', url: 'https://cdn.example.com/hero.webm' }
     })
 })
 

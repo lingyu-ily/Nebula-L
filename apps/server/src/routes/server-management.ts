@@ -53,6 +53,9 @@ interface ServerRow extends RowDataPacket {
     icon_upload_id: string | null
     hero_background_upload_id: string | null
     hero_logo_upload_id: string | null
+    hero_video_source: 'upload' | 'external' | 'youtube' | null
+    hero_video_upload_id: string | null
+    hero_video_url: string | null
     hero_eyebrow: string | null
     hero_title: string | null
     hero_tagline: string | null
@@ -133,6 +136,11 @@ function mapServer(row: ServerRow): Record<string, unknown> {
         launcherUi: {
             backgroundUploadId: row.hero_background_upload_id,
             logoUploadId: row.hero_logo_upload_id,
+            video: row.hero_video_source === 'upload' && row.hero_video_upload_id
+                ? { source: 'upload', uploadId: row.hero_video_upload_id }
+                : row.hero_video_source && row.hero_video_url
+                    ? { source: row.hero_video_source, url: row.hero_video_url }
+                    : null,
             eyebrow: row.hero_eyebrow ?? '',
             title: row.hero_title ?? '',
             tagline: row.hero_tagline ?? '',

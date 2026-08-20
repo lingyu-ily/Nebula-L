@@ -4,6 +4,16 @@ export interface LauncherServerUi {
     hero?: {
         background?: string
         logo?: string
+        video?: {
+            type: 'file'
+            url: string
+            sha256?: string
+            size?: number
+            contentType?: 'video/mp4' | 'video/webm'
+        } | {
+            type: 'youtube'
+            videoId: string
+        }
         eyebrow?: string
         title?: string
         tagline?: string

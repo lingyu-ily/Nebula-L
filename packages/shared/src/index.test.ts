@@ -43,6 +43,7 @@ describe('shared validation', () => {
         expect(launcherUiInputSchema.safeParse({
             backgroundUploadId: '9fb8ad8a-4d47-4dd8-85f7-07059f4ef4c8',
             logoUploadId: null,
+            video: { source: 'external', url: 'https://cdn.example.com/hero.webm' },
             eyebrow: 'MAPLECRAFT SERVER',
             title: 'Adventure World',
             tagline: 'Build your own empire.',
@@ -50,5 +51,7 @@ describe('shared validation', () => {
         }).success).toBe(true)
         expect(launcherUiInputSchema.safeParse({ rss: 'not-a-url' }).success).toBe(false)
         expect(launcherUiInputSchema.safeParse({ eyebrow: 'x'.repeat(129) }).success).toBe(false)
+        expect(launcherUiInputSchema.safeParse({ video: { source: 'upload', uploadId: 'not-a-uuid' } }).success).toBe(false)
+        expect(launcherUiInputSchema.safeParse({ video: { source: 'youtube', url: 'not-a-url' } }).success).toBe(false)
     })
 })

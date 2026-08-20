@@ -143,9 +143,13 @@ export class ServerStructure extends BaseModelStructure<LauncherServer> {
         const hero = ui.hero
         const background = resolveAsset(hero?.background)
         const logo = resolveAsset(hero?.logo)
+        const video = hero?.video?.type === 'file'
+            ? { ...hero.video, url: resolveAsset(hero.video.url)! }
+            : hero?.video
         const resolvedHero = hero ? {
             ...(background ? { background } : {}),
             ...(logo ? { logo } : {}),
+            ...(video ? { video } : {}),
             ...(hero.eyebrow ? { eyebrow: hero.eyebrow } : {}),
             ...(hero.title ? { title: hero.title } : {}),
             ...(hero.tagline ? { tagline: hero.tagline } : {})

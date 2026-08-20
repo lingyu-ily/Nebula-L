@@ -11,6 +11,14 @@ import { writeAudit } from '../audit.js'
 import { getPool, withTransaction } from '../db/index.js'
 import { HttpError, requireCsrf, requireRole } from '../http.js'
 import {
+    LAUNCHER_VIDEO_TYPES,
+    detectLauncherVideoHeader,
+    LauncherVideoValidationError,
+    normalizeYouTubeVideoId,
+    validateExternalVideoUrl
+} from '../launcher-video.js'
+import { getStoredObject } from '../storage.js'
+import {
     assertFileDestinationAvailable,
     ensureFileParentDirectories,
     managedPathKey,
@@ -47,6 +55,9 @@ interface ServerRow extends RowDataPacket {
     icon_upload_id: string | null
     hero_background_upload_id: string | null
     hero_logo_upload_id: string | null
+    hero_video_source: 'upload' | 'external' | 'youtube' | null
+    hero_video_upload_id: string | null
+    hero_video_url: string | null
     hero_eyebrow: string | null
     hero_title: string | null
     hero_tagline: string | null
@@ -117,6 +128,11 @@ function mapServer(row: ServerRow): Record<string, unknown> {
         launcherUi: {
             backgroundUploadId: row.hero_background_upload_id,
             logoUploadId: row.hero_logo_upload_id,
+            video: row.hero_video_source === 'upload' && row.hero_video_upload_id
+                ? { source: 'upload', uploadId: row.hero_video_upload_id }
+                : row.hero_video_source && row.hero_video_url
+                    ? { source: row.hero_video_source, url: row.hero_video_url }
+                    : null,
             eyebrow: row.hero_eyebrow ?? '',
             title: row.hero_title ?? '',
             tagline: row.hero_tagline ?? '',
@@ -268,6 +284,66 @@ async function assertLauncherImageUploads(
     }
     if (rows.some(row => !LAUNCHER_IMAGE_TYPES.has(row.mime_type.toLowerCase()))) {
         throw new HttpError(400, 'Invalid launcher image', 'Launcher images must be PNG, JPEG, or WebP')
+    }
+}
+
+async function assertLauncherVideo(
+    connection: PoolConnection,
+    projectId: string,
+    video: { source: 'upload', uploadId: string } | { source: 'external' | 'youtube', url: string } | null
+): Promise<void> {
+    if (!video) {
+        return
+    }
+    if (video.source !== 'upload') {
+        try {
+            if (video.source === 'external') {
+                validateExternalVideoUrl(video.url)
+            } else {
+                normalizeYouTubeVideoId(video.url)
+            }
+        } catch (error) {
+            if (error instanceof LauncherVideoValidationError) {
+                throw new HttpError(400, 'Invalid launcher video', error.message)
+            }
+            throw error
+        }
+        return
+    }
+    const [rows] = await connection.query<(RowDataPacket & { mime_type: string, object_key: string })[]>(
+        `SELECT mime_type, object_key FROM uploads
+         WHERE id = ? AND project_id = ? AND status = 'READY' FOR UPDATE`,
+        [video.uploadId, projectId]
+    )
+    if (!rows[0]) {
+        throw new HttpError(400, 'Invalid launcher video', 'Launcher video must belong to this distribution')
+    }
+    if (!LAUNCHER_VIDEO_TYPES.has(rows[0].mime_type.toLowerCase())) {
+        throw new HttpError(400, 'Invalid launcher video', 'Launcher video must be MP4 or WebM')
+    }
+    const stored = await getStoredObject(rows[0].object_key, 'bytes=0-11')
+    const chunks: Buffer[] = []
+    let headerBytes = 0
+    for await (const chunk of stored.body) {
+        const remaining = 12 - headerBytes
+        const value = Buffer.from(chunk as Uint8Array).subarray(0, remaining)
+        chunks.push(value)
+        headerBytes += value.length
+        if (headerBytes >= 12) {
+            stored.body.destroy()
+            break
+        }
+    }
+    try {
+        const detected = detectLauncherVideoHeader(Buffer.concat(chunks))
+        if (detected !== rows[0].mime_type.toLowerCase()) {
+            throw new LauncherVideoValidationError('Launcher video Content-Type does not match its file format')
+        }
+    } catch (error) {
+        if (error instanceof LauncherVideoValidationError) {
+            throw new HttpError(400, 'Invalid launcher video', error.message)
+        }
+        throw error
     }
 }
 
@@ -521,13 +597,21 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                 parsed.data.backgroundUploadId,
                 parsed.data.logoUploadId
             ])
+            await assertLauncherVideo(connection, projectId, parsed.data.video)
+            const videoSource = parsed.data.video?.source ?? null
+            const videoUploadId = parsed.data.video?.source === 'upload' ? parsed.data.video.uploadId : null
+            const videoUrl = parsed.data.video && parsed.data.video.source !== 'upload' ? parsed.data.video.url : null
             await connection.execute(
-                `UPDATE servers SET hero_background_upload_id = ?, hero_logo_upload_id = ?, hero_eyebrow = ?,
+                `UPDATE servers SET hero_background_upload_id = ?, hero_logo_upload_id = ?, hero_video_source = ?,
+                 hero_video_upload_id = ?, hero_video_url = ?, hero_eyebrow = ?,
                  hero_title = ?, hero_tagline = ?, news_rss = ?, revision = revision + 1,
                  updated_at = UTC_TIMESTAMP(3) WHERE id = ?`,
                 [
                     parsed.data.backgroundUploadId,
                     parsed.data.logoUploadId,
+                    videoSource,
+                    videoUploadId,
+                    videoUrl,
                     parsed.data.eyebrow || null,
                     parsed.data.title || null,
                     parsed.data.tagline || null,
