@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto'
-import { readFile } from 'fs/promises'
+import { readFile, readdir } from 'fs/promises'
 import { dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { isSafeRelativePath } from '@nebula/shared'
@@ -61,7 +61,10 @@ export async function migrateDatabase(): Promise<void> {
                 applied_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
             ) ENGINE=InnoDB
         `)
-        const migrations = ['0001_initial.sql', '0002_server_file_manager.sql', '0003_launcher_ui.sql']
+        const migrationsDirectory = resolve(__dirname, '..', '..', 'migrations')
+        const migrations = (await readdir(migrationsDirectory))
+            .filter(file => /^\d{4}_[a-z0-9_]+\.sql$/.test(file))
+            .sort((left, right) => left.localeCompare(right))
         for (const migration of migrations) {
             const [existing] = await connection.execute(
                 'SELECT version FROM schema_migrations WHERE version = ?',
@@ -70,7 +73,7 @@ export async function migrateDatabase(): Promise<void> {
             if ((existing as unknown[]).length > 0) {
                 continue
             }
-            const sql = await readFile(resolve(__dirname, '..', '..', 'migrations', migration), 'utf8')
+            const sql = await readFile(resolve(migrationsDirectory, migration), 'utf8')
             await connection.beginTransaction()
             try {
                 for (const statement of sql.split('-- statement-breakpoint').map(value => value.trim()).filter(Boolean)) {
