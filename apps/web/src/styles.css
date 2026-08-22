@@ -143,6 +143,8 @@ input:disabled { opacity: .6; }
 .two-column { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
 .timeline-row { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto auto; gap: 13px; align-items: start; padding: 15px 0; border-top: 1px solid var(--line); }
 .timeline-row small { display: block; color: var(--muted); margin-top: 4px; }.state-running { background: var(--blue); box-shadow: 0 0 10px #7b8cff88; }.state-failed { background: var(--danger); }.state-queued { background: var(--warning); }
+.timeline-pagination { min-height: 42px; margin-top: 8px; padding-top: 14px; display: flex; justify-content: space-between; align-items: center; gap: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.timeline-pagination .text-button:disabled { color: #566174; cursor: not-allowed; }
 .error-text, .notice.error { color: #ff9bad; }.error-text { max-width: 380px; white-space: pre-wrap; font-size: 12px; }
 .notice { padding: 12px; background: #251320; border: 1px solid #6d2c48; grid-column: 1 / -1; }
 

@@ -11,6 +11,7 @@ import {
     type AuditLog,
     type AuthResponse,
     type Job,
+    type PaginatedResponse,
     type Project,
     type ProjectDetail,
     type Release
@@ -344,15 +345,53 @@ function CurseForgePanel({ detail, canEdit }: { detail: ProjectDetail, canEdit: 
     </section>
 }
 
+const HISTORY_PAGE_SIZE = 5
+
+function HistoryPagination({
+    label,
+    page,
+    hasMore,
+    onPrevious,
+    onNext
+}: {
+    label: string
+    page: number
+    hasMore: boolean
+    onPrevious: () => void
+    onNext: () => void
+}): ReactNode {
+    const { t } = useTranslation()
+    if (page === 0 && !hasMore) return null
+    return <nav className="timeline-pagination" aria-label={label}>
+        <button type="button" className="text-button" disabled={page === 0} onClick={onPrevious}>{t('previousPage')}</button>
+        <span>{t('pageNumber', { page: page + 1 })}</span>
+        <button type="button" className="text-button" disabled={!hasMore} onClick={onNext}>{t('nextPage')}</button>
+    </nav>
+}
+
 function ReleasePanel({ project, canEdit }: { project: Project, canEdit: boolean }): ReactNode {
     const { t } = useTranslation()
     const queryClient = useQueryClient()
-    const jobs = useQuery({ queryKey: ['jobs', project.id], queryFn: () => api<{ items: Job[] }>(`/api/v1/projects/${project.id}/jobs`), refetchInterval: 3000 })
-    const releases = useQuery({ queryKey: ['releases', project.id], queryFn: () => api<{ items: Release[] }>(`/api/v1/projects/${project.id}/releases`), refetchInterval: 5000 })
+    const [jobPage, setJobPage] = useState(0)
+    const [releasePage, setReleasePage] = useState(0)
+    const jobs = useQuery({
+        queryKey: ['jobs', project.id, jobPage],
+        queryFn: () => api<PaginatedResponse<Job>>(`/api/v1/projects/${project.id}/jobs?limit=${HISTORY_PAGE_SIZE}&offset=${jobPage * HISTORY_PAGE_SIZE}`),
+        refetchInterval: jobPage === 0 ? 3000 : false
+    })
+    const releases = useQuery({
+        queryKey: ['releases', project.id, releasePage],
+        queryFn: () => api<PaginatedResponse<Release>>(`/api/v1/projects/${project.id}/releases?limit=${HISTORY_PAGE_SIZE}&offset=${releasePage * HISTORY_PAGE_SIZE}`),
+        refetchInterval: releasePage === 0 ? 5000 : false
+    })
     const retry = useMutation({ mutationFn: (id: string) => api(`/api/v1/jobs/${id}/retry`, { method: 'POST' }), onSuccess: () => void jobs.refetch() })
     const activate = useMutation({
         mutationFn: (id: string) => api(`/api/v1/projects/${project.id}/releases/${id}/activate`, { method: 'POST' }),
-        onSuccess: () => { void releases.refetch(); void queryClient.invalidateQueries({ queryKey: ['project', project.id] }) }
+        onSuccess: () => {
+            setReleasePage(0)
+            void queryClient.invalidateQueries({ queryKey: ['releases', project.id] })
+            void queryClient.invalidateQueries({ queryKey: ['project', project.id] })
+        }
     })
     return <div className="two-column">
         <section className="card"><h2>{t('jobs')}</h2>{jobs.data?.items.map(job => <div className="timeline-row" key={job.id}>
@@ -364,13 +403,27 @@ function ReleasePanel({ project, canEdit }: { project: Project, canEdit: boolean
                     ? `${job.status} · ${job.progress}%`
                     : job.status}</span>
             {canEdit && job.status === 'FAILED' && <button className="text-button" onClick={() => retry.mutate(job.id)}>{t('retry')}</button>}
-        </div>)}{jobs.data?.items.length === 0 && <div className="empty">{t('noRecords')}</div>}</section>
+        </div>)}{jobs.data?.items.length === 0 && <div className="empty">{t('noRecords')}</div>}
+        <HistoryPagination
+            label={t('jobsPagination')}
+            page={jobPage}
+            hasMore={jobs.data?.hasMore ?? false}
+            onPrevious={() => setJobPage(current => Math.max(0, current - 1))}
+            onNext={() => setJobPage(current => current + 1)}
+        /></section>
         <section className="card"><h2>{t('releases')}</h2>{releases.data?.items.map(release => <div className="timeline-row" key={release.id}>
             <span className={`job-state ${release.status === 'ACTIVE' ? 'state-succeeded' : ''}`} />
             <div><strong>r{release.draftRevision}</strong><small>{new Date(release.activatedAt).toLocaleString()} · {release.createdBy}</small></div>
             <span className="pill">{release.status}</span>
             {canEdit && release.retained && release.status !== 'ACTIVE' && <button className="text-button" onClick={() => window.confirm(t('confirmRollback')) && activate.mutate(release.id)}>{t('rollback')}</button>}
-        </div>)}{releases.data?.items.length === 0 && <div className="empty">{t('noRecords')}</div>}</section>
+        </div>)}{releases.data?.items.length === 0 && <div className="empty">{t('noRecords')}</div>}
+        <HistoryPagination
+            label={t('releasesPagination')}
+            page={releasePage}
+            hasMore={releases.data?.hasMore ?? false}
+            onPrevious={() => setReleasePage(current => Math.max(0, current - 1))}
+            onNext={() => setReleasePage(current => current + 1)}
+        /></section>
         <ErrorNotice error={jobs.error ?? releases.error ?? retry.error ?? activate.error} />
     </div>
 }
@@ -416,7 +469,7 @@ function ProjectPage({ user }: { user: ApiUser }): ReactNode {
         <ProjectSettings detail={detail.data} canEdit={canEdit} />
         <ServerPanel key={project.draftRevision} detail={detail.data} canEdit={canEdit} />
         <CurseForgePanel detail={detail.data} canEdit={canEdit} />
-        <ReleasePanel project={project} canEdit={canEdit} />
+        <ReleasePanel key={project.id} project={project} canEdit={canEdit} />
         {user.role === 'ADMIN' && <section className="card danger-zone">
             <div><h2>{t('disableProject')}</h2><p>{t('disableProjectHint')}</p></div>
             <button

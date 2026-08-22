@@ -48,7 +48,7 @@ public/{distribution-slug}/releases/{release-id}/...
 private/uploads/{project-id}/...
 ```
 
-The stable `distribution.json` is replaced only after every immutable release object has uploaded and passed size/SHA-256 verification. Ten successful releases are retained. Release metadata and audit records remain in MariaDB after old objects are cleaned.
+The stable `distribution.json` is replaced only after every immutable release object has uploaded and passed size/SHA-256 verification. Five successful releases are retained. Release metadata and audit records remain in MariaDB after old objects are cleaned.
 
 Configure Helios Launcher with the stable URL, never a URL containing a release ID:
 

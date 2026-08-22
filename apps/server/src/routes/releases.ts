@@ -4,7 +4,8 @@ import type { FastifyInstance } from 'fastify'
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 import { writeAudit } from '../audit.js'
 import { getPool, withTransaction } from '../db/index.js'
-import { HttpError, requireCsrf, requireRole } from '../http.js'
+import { HttpError, parsePagination, requireCsrf, requireRole } from '../http.js'
+import { createPage } from '../list-pagination.js'
 import { buildProjectSnapshot } from '../publisher.js'
 import { copyJson } from '../storage.js'
 import {
@@ -84,13 +85,15 @@ export async function registerReleaseRoutes(app: FastifyInstance): Promise<void>
 
     app.get('/api/v1/projects/:projectId/jobs', { preHandler: requireRole('ADMIN', 'EDITOR', 'AUDITOR') }, async request => {
         const { projectId } = request.params as { projectId: string }
+        const query = request.query as Record<string, unknown>
+        const { limit, offset } = parsePagination({ ...query, limit: query.limit ?? 100 })
         const [rows] = await getPool().execute<JobListRow[]>(
             `SELECT id, project_id, kind, status, attempts, max_attempts, progress, result,
                     error_text, created_at, started_at, completed_at
-             FROM jobs WHERE project_id = ? ORDER BY created_at DESC LIMIT 100`,
-            [projectId]
+             FROM jobs WHERE project_id = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
+            [projectId, limit + 1, offset]
         )
-        return { items: rows.map(row => ({
+        return createPage(rows.map(row => ({
             id: row.id,
             projectId: row.project_id,
             kind: row.kind,
@@ -103,7 +106,7 @@ export async function registerReleaseRoutes(app: FastifyInstance): Promise<void>
             createdAt: row.created_at,
             startedAt: row.started_at,
             completedAt: row.completed_at
-        })) }
+        })), limit, offset)
     })
 
     app.post('/api/v1/jobs/:jobId/retry', { preHandler: requireRole('ADMIN', 'EDITOR') }, async request => {
@@ -138,14 +141,16 @@ export async function registerReleaseRoutes(app: FastifyInstance): Promise<void>
 
     app.get('/api/v1/projects/:projectId/releases', { preHandler: requireRole('ADMIN', 'EDITOR', 'AUDITOR') }, async request => {
         const { projectId } = request.params as { projectId: string }
+        const query = request.query as Record<string, unknown>
+        const { limit, offset } = parsePagination({ ...query, limit: query.limit ?? 100 })
         const [rows] = await getPool().execute<ReleaseRow[]>(
             `SELECT r.id, r.project_id, r.draft_revision, r.status, r.distribution_key,
                     r.created_at, r.activated_at, u.username
              FROM releases r INNER JOIN users u ON u.id = r.created_by
-             WHERE r.project_id = ? ORDER BY r.activated_at DESC LIMIT 100`,
-            [projectId]
+             WHERE r.project_id = ? ORDER BY r.activated_at DESC, r.id DESC LIMIT ? OFFSET ?`,
+            [projectId, limit + 1, offset]
         )
-        return { items: rows.map(row => ({
+        return createPage(rows.map(row => ({
             id: row.id,
             projectId: row.project_id,
             draftRevision: Number(row.draft_revision),
@@ -154,7 +159,7 @@ export async function registerReleaseRoutes(app: FastifyInstance): Promise<void>
             createdBy: row.username,
             createdAt: row.created_at,
             activatedAt: row.activated_at
-        })) }
+        })), limit, offset)
     })
 
     app.post('/api/v1/projects/:projectId/releases/:releaseId/activate', { preHandler: requireRole('ADMIN', 'EDITOR') }, async request => {

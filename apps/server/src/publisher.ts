@@ -14,6 +14,7 @@ import { writeAudit } from './audit.js'
 import { getConfig } from './config.js'
 import { getPool, withTransaction } from './db/index.js'
 import { PermanentJobError, shouldRetryJob } from './job-errors.js'
+import { selectReleasesForDeletion } from './release-retention.js'
 import {
     downloadExternalVideo,
     LauncherVideoValidationError,
@@ -818,12 +819,13 @@ async function activateRelease(job: JobRow, snapshot: ProjectSnapshot): Promise<
 }
 
 async function enforceRetention(projectId: string, activeReleaseId: string): Promise<void> {
-    const [oldReleases] = await getPool().execute<(RowDataPacket & { id: string, distribution_key: string })[]>(
+    const [retainedReleases] = await getPool().execute<(RowDataPacket & { id: string, distribution_key: string })[]>(
         `SELECT id, distribution_key FROM releases
-         WHERE project_id = ? AND status IN ('ACTIVE','AVAILABLE') AND id <> ?
-         ORDER BY activated_at DESC LIMIT 18446744073709551615 OFFSET 9`,
-        [projectId, activeReleaseId]
+         WHERE project_id = ? AND status IN ('ACTIVE','AVAILABLE')
+         ORDER BY activated_at DESC, id DESC`,
+        [projectId]
     )
+    const oldReleases = selectReleasesForDeletion(retainedReleases, activeReleaseId)
     for (const release of oldReleases) {
         const [fileRows] = await getPool().execute<(RowDataPacket & { object_key: string })[]>(
             'SELECT object_key FROM release_files WHERE release_id = ?',

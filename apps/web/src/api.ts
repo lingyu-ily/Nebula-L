@@ -103,6 +103,13 @@ export interface ServerDetail {
     directories: ServerDirectory[]
 }
 
+export interface PaginatedResponse<T> {
+    items: T[]
+    limit: number
+    offset: number
+    hasMore: boolean
+}
+
 export interface Job {
     id: string
     kind: 'PUBLISH' | 'CURSEFORGE_IMPORT'
