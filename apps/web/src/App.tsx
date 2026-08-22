@@ -198,7 +198,7 @@ function ProjectSettings({ detail, canEdit }: { detail: ProjectDetail, canEdit: 
         update.mutate({
             revision: detail.project.draftRevision,
             name: String(data.get('name')),
-            slug: String(data.get('slug')),
+            slug: String(data.get('slug') ?? detail.project.slug),
             description: String(data.get('description')),
             rss: String(data.get('rss')),
             discord: data.get('discordClientId') || data.get('discordSmallText') || data.get('discordSmallKey') ? {

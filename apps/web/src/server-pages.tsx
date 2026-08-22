@@ -179,7 +179,7 @@ function ServerForm({ project, server, canEdit, onDone }: ServerFormProps): Reac
         mutation.mutate({
             value: {
                 revision: project.draftRevision,
-                serverKey: String(data.get('serverKey')),
+                serverKey: String(data.get('serverKey') ?? server?.serverKey),
                 name: String(data.get('name')),
                 description: String(data.get('description')),
                 minecraftVersion,
