@@ -5,6 +5,7 @@ import {
     isSafeRelativePath,
     launcherUiInputSchema,
     modulePatchSchema,
+    serverOrderInputSchema,
     serverInputSchema
 } from './index.js'
 
@@ -37,6 +38,14 @@ describe('shared validation', () => {
             fabricVersion: '0.16.0'
         })
         expect(result.success).toBe(false)
+    })
+
+    it('requires unique server IDs when saving server order', () => {
+        const first = '9fb8ad8a-4d47-4dd8-85f7-07059f4ef4c8'
+        const second = '0d4b42c8-45ec-4bbc-9ca1-80901de7b38d'
+        expect(serverOrderInputSchema.safeParse({ serverIds: [first, second] }).success).toBe(true)
+        expect(serverOrderInputSchema.safeParse({ serverIds: [first, first] }).success).toBe(false)
+        expect(serverOrderInputSchema.safeParse({ serverIds: [] }).success).toBe(true)
     })
 
     it('validates per-server launcher content', () => {

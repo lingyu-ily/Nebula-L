@@ -283,7 +283,7 @@ export async function buildProjectSnapshot(connection: PoolConnection, projectId
          LEFT JOIN uploads bg ON bg.id = s.hero_background_upload_id AND bg.status = 'READY'
          LEFT JOIN uploads logo ON logo.id = s.hero_logo_upload_id AND logo.status = 'READY'
          LEFT JOIN uploads video ON video.id = s.hero_video_upload_id AND video.status = 'READY'
-         WHERE s.project_id = ? ORDER BY s.sort_order, s.name`,
+         WHERE s.project_id = ? ORDER BY s.sort_order, s.name, s.id`,
         [projectId]
     )
     const [moduleRows] = await connection.query<ModuleSnapshotRow[]>(
@@ -668,7 +668,7 @@ async function materializeSnapshot(snapshot: ProjectSnapshot, root: string): Pro
     }
 }
 
-function orderDistribution(distribution: Distribution, snapshot: ProjectSnapshot): void {
+export function orderDistribution(distribution: Distribution, snapshot: ProjectSnapshot): void {
     const serverOrder = new Map(snapshot.servers.map((server, index) => [server.serverKey, index]))
     distribution.servers.sort((left, right) => (serverOrder.get(left.id) ?? 9999) - (serverOrder.get(right.id) ?? 9999))
     for (const server of distribution.servers) {
@@ -954,21 +954,22 @@ export async function importCurseForgeJob(job: JobRow): Promise<void> {
             if (!projectRows[0]) {
                 throw new Error('Project not found')
             }
-            const [serverCount] = await connection.query<(RowDataPacket & { total: number })[]>(
-                'SELECT COUNT(*) AS total FROM servers WHERE project_id = ?',
+            const [serverOrder] = await connection.query<(RowDataPacket & { next_order: number })[]>(
+                'SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order FROM servers WHERE project_id = ?',
                 [job.project_id]
             )
+            const nextSortOrder = Number(serverOrder[0]?.next_order ?? 0)
             const serverId = randomUUID()
             await connection.execute(
                 `INSERT INTO servers (
                     id, project_id, server_key, name, description, minecraft_version, server_version, address,
                     forge_version, fabric_version, main_server, autoconnect, sort_order, revision, published_once,
                     created_at, updated_at
-                 ) VALUES (?, ?, ?, ?, ?, ?, ?, 'localhost:25565', ?, ?, ?, FALSE, 0, 0, FALSE, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))`,
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, 'localhost:25565', ?, ?, ?, FALSE, ?, 0, FALSE, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))`,
                 [
                     serverId, job.project_id, input.serverKey, manifest.name, `Imported from CurseForge by ${manifest.author}`,
                     manifest.minecraft.version, manifest.version, forgeVersion ?? null, fabricVersion ?? null,
-                    Number(serverCount[0]?.total ?? 0) === 0
+                    nextSortOrder === 0, nextSortOrder
                 ]
             )
             for (const artifact of storedArtifacts) {

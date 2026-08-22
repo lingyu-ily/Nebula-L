@@ -3,6 +3,7 @@ import {
     launcherUiInputSchema,
     moduleInputSchema,
     projectInputSchema,
+    serverOrderInputSchema,
     serverInputSchema
 } from '@nebula/shared'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
@@ -18,6 +19,7 @@ import {
     validateExternalVideoUrl
 } from '../launcher-video.js'
 import { getStoredObject } from '../storage.js'
+import { isCompleteServerOrder } from '../server-order.js'
 import {
     assertFileDestinationAvailable,
     ensureFileParentDirectories,
@@ -361,7 +363,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
             throw new HttpError(404, 'Project not found')
         }
         const [serverRows] = await getPool().execute<ServerRow[]>(
-            'SELECT * FROM servers WHERE project_id = ? ORDER BY sort_order, name',
+            'SELECT * FROM servers WHERE project_id = ? ORDER BY sort_order, name, id',
             [projectId]
         )
         const [moduleRows] = await getPool().execute<ModuleRow[]>(
@@ -486,6 +488,11 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
         try {
             await withTransaction(async connection => {
                 await lockProject(connection, projectId, expectedRevision)
+                const [serverOrder] = await connection.query<(RowDataPacket & { next_order: number })[]>(
+                    'SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order FROM servers WHERE project_id = ?',
+                    [projectId]
+                )
+                const nextSortOrder = Number(serverOrder[0]?.next_order ?? 0)
                 if (parsed.data.mainServer) {
                     await connection.execute('UPDATE servers SET main_server = FALSE WHERE project_id = ?', [projectId])
                 }
@@ -500,7 +507,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                         parsed.data.minecraftVersion, parsed.data.serverVersion, parsed.data.address,
                         JSON.stringify(parsed.data.discord ?? null),
                         parsed.data.iconUploadId ?? null, parsed.data.forgeVersion || null, parsed.data.fabricVersion || null,
-                        parsed.data.mainServer, parsed.data.autoconnect, parsed.data.sortOrder,
+                        parsed.data.mainServer, parsed.data.autoconnect, nextSortOrder,
                         JSON.stringify(parsed.data.javaOptions ?? null)
                     ]
                 )
@@ -511,7 +518,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                     entityType: 'server',
                     entityId: id,
                     projectId,
-                    after: parsed.data
+                    after: { ...parsed.data, sortOrder: nextSortOrder }
                 })
             })
         } catch (error) {
@@ -521,6 +528,48 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
             throw error
         }
         return reply.status(201).send({ id, draftRevision: expectedRevision + 1 })
+    })
+
+    app.put('/api/v1/projects/:projectId/servers/order', { preHandler: requireRole('ADMIN', 'EDITOR') }, async request => {
+        requireCsrf(request)
+        const { projectId } = request.params as { projectId: string }
+        const expectedRevision = getRevision(request)
+        const parsed = serverOrderInputSchema.safeParse(request.body)
+        if (!parsed.success) {
+            throw new HttpError(400, 'Invalid server order', undefined, parsed.error.flatten())
+        }
+        await withTransaction(async connection => {
+            await lockProject(connection, projectId, expectedRevision)
+            const [serverRows] = await connection.query<(RowDataPacket & { id: string })[]>(
+                'SELECT id FROM servers WHERE project_id = ? ORDER BY sort_order, name, id FOR UPDATE',
+                [projectId]
+            )
+            const before = serverRows.map(row => row.id)
+            if (!isCompleteServerOrder(before, parsed.data.serverIds)) {
+                throw new HttpError(
+                    400,
+                    'Invalid server order',
+                    'Server order must contain every server in this distribution exactly once'
+                )
+            }
+            for (const [sortOrder, serverId] of parsed.data.serverIds.entries()) {
+                await connection.execute(
+                    `UPDATE servers SET sort_order = ?, updated_at = UTC_TIMESTAMP(3)
+                     WHERE id = ? AND project_id = ?`,
+                    [sortOrder, serverId, projectId]
+                )
+            }
+            await bumpProject(connection, projectId)
+            await writeAudit(connection, auditContextFromRequest(request), {
+                action: 'servers.reordered',
+                entityType: 'project',
+                entityId: projectId,
+                projectId,
+                before: { serverIds: before },
+                after: { serverIds: parsed.data.serverIds }
+            })
+        })
+        return { updated: true, draftRevision: expectedRevision + 1 }
     })
 
     app.put('/api/v1/projects/:projectId/servers/:serverId', { preHandler: requireRole('ADMIN', 'EDITOR') }, async request => {

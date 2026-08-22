@@ -247,15 +247,67 @@ function LauncherPanel({ project }: { project: Project }): ReactNode {
 
 function ServerPanel({ detail, canEdit }: { detail: ProjectDetail, canEdit: boolean }): ReactNode {
     const { t } = useTranslation()
-    return <section className="card"><div className="section-heading"><h2>{t('servers')}</h2>{canEdit && <Link className="secondary button-link" to={`/projects/${detail.project.id}/servers/new`}>{t('newServer')}</Link>}</div>
+    const queryClient = useQueryClient()
+    const [orderedIds, setOrderedIds] = useState(() => detail.servers.map(server => server.id))
+    const [announcement, setAnnouncement] = useState('')
+    const orderedServers = orderedIds.flatMap(id => {
+        const server = detail.servers.find(candidate => candidate.id === id)
+        return server ? [server] : []
+    })
+    const orderChanged = orderedIds.some((id, index) => id !== detail.servers[index]?.id)
+    const saveOrder = useMutation({
+        mutationFn: (serverIds: string[]) => api<{ updated: boolean, draftRevision: number }>(`/api/v1/projects/${detail.project.id}/servers/order`, {
+            method: 'PUT',
+            ...jsonBody({ revision: detail.project.draftRevision, serverIds })
+        }),
+        onSuccess: (response, serverIds) => {
+            queryClient.setQueryData<ProjectDetail>(['project', detail.project.id], current => {
+                if (!current) return current
+                const serversById = new Map(current.servers.map(server => [server.id, server]))
+                return {
+                    project: { ...current.project, draftRevision: response.draftRevision },
+                    servers: serverIds.flatMap((id, sortOrder) => {
+                        const server = serversById.get(id)
+                        return server ? [{ ...server, sortOrder }] : []
+                    })
+                }
+            })
+            void queryClient.invalidateQueries({ queryKey: ['project', detail.project.id] })
+        }
+    })
+    const moveServer = (index: number, offset: -1 | 1): void => {
+        const targetIndex = index + offset
+        const server = orderedServers[index]
+        if (!server || targetIndex < 0 || targetIndex >= orderedIds.length) return
+        setOrderedIds(current => {
+            const next = [...current]
+            const currentId = next[index]
+            const targetId = next[targetIndex]
+            if (!currentId || !targetId) return current
+            next[index] = targetId
+            next[targetIndex] = currentId
+            return next
+        })
+        setAnnouncement(t('serverMoved', { name: server.name, position: targetIndex + 1 }))
+    }
+    return <section className="card">
+        <div className="section-heading server-panel-heading"><h2>{t('servers')}</h2>{canEdit && <div className="server-panel-actions">
+            <button type="button" className="secondary" disabled={!orderChanged || saveOrder.isPending} onClick={() => saveOrder.mutate(orderedIds)}>{saveOrder.isPending ? t('savingServerOrder') : t('saveServerOrder')}</button>
+            <Link className="secondary button-link" to={`/projects/${detail.project.id}/servers/new`}>{t('newServer')}</Link>
+        </div>}</div>
         <div className="server-list">
-            {detail.servers.map(server => <article className="server-row" key={server.id}>
-                <div><span className="server-version">MC {server.minecraftVersion}</span><h3>{server.name}</h3><p><code>{server.serverKey}</code> · {server.address}</p></div>
+            {orderedServers.map((server, index) => <article className="server-row" key={server.id}>
+                <div className="server-primary"><span className="server-order-position" aria-label={t('serverPosition', { position: index + 1 })}>{index + 1}</span><div><span className="server-version">MC {server.minecraftVersion}</span><h3>{server.name}</h3><p><code>{server.serverKey}</code> · {server.address}</p></div></div>
                 <div className="server-meta"><span>{server.forgeVersion ? `Forge ${server.forgeVersion}` : server.fabricVersion ? `Fabric ${server.fabricVersion}` : t('loaderNone')}</span>{server.mainServer && <span className="pill">{t('mainServer')}</span>}</div>
-                <div className="row-actions"><Link className="text-button" to={`/projects/${detail.project.id}/servers/${server.id}/overview`}>{t('manage')}</Link></div>
+                <div className="row-actions">{canEdit && <div className="server-order-controls">
+                    <button type="button" disabled={index === 0 || saveOrder.isPending} aria-label={t('moveServerUp', { name: server.name })} onClick={() => moveServer(index, -1)}>↑</button>
+                    <button type="button" disabled={index === orderedServers.length - 1 || saveOrder.isPending} aria-label={t('moveServerDown', { name: server.name })} onClick={() => moveServer(index, 1)}>↓</button>
+                </div>}<Link className="text-button" to={`/projects/${detail.project.id}/servers/${server.id}/overview`}>{t('manage')}</Link></div>
             </article>)}
             {detail.servers.length === 0 && <div className="empty">{t('noServers')}</div>}
         </div>
+        <span className="sr-only" aria-live="polite">{announcement}</span>
+        <ErrorNotice error={saveOrder.error} />
     </section>
 }
 
@@ -362,7 +414,7 @@ function ProjectPage({ user }: { user: ApiUser }): ReactNode {
         <ErrorNotice error={publish.error} />
         <LauncherPanel project={project} />
         <ProjectSettings detail={detail.data} canEdit={canEdit} />
-        <ServerPanel detail={detail.data} canEdit={canEdit} />
+        <ServerPanel key={project.draftRevision} detail={detail.data} canEdit={canEdit} />
         <CurseForgePanel detail={detail.data} canEdit={canEdit} />
         <ReleasePanel project={project} canEdit={canEdit} />
         {user.role === 'ADMIN' && <section className="card danger-zone">

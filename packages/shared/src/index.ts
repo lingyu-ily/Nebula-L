@@ -98,6 +98,13 @@ export const serverInputSchema = z.object({
     message: 'Forge and Fabric are mutually exclusive'
 })
 
+export const serverOrderInputSchema = z.object({
+    serverIds: z.array(z.uuid()).refine(
+        values => new Set(values).size === values.length,
+        'Server IDs must be unique'
+    )
+})
+
 export const versionCatalogLoaderSchema = z.enum(['forge', 'fabric'])
 export type VersionCatalogLoader = z.infer<typeof versionCatalogLoaderSchema>
 

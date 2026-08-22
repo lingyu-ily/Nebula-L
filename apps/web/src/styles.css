@@ -118,8 +118,19 @@ input:disabled { opacity: .6; }
 .server-row:first-child { border-top: 0; }
 .server-row h3 { margin: 5px 0; }
 .server-row p, .server-meta { color: var(--muted); font-size: 13px; }
+.server-panel-actions, .server-primary, .server-order-controls { display: flex; align-items: center; }
+.server-panel-actions { gap: 10px; }
+.server-panel-actions .secondary:disabled { opacity: .45; cursor: not-allowed; }
+.server-primary { min-width: 0; gap: 16px; }
+.server-primary > div { min-width: 0; }
+.server-order-position { flex: 0 0 auto; width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid #3b4b64; color: var(--muted); font: 11px 'DM Mono', monospace; }
+.server-order-controls { gap: 5px; }
+.server-order-controls button { width: 32px; height: 32px; padding: 0; border: 1px solid #42516a; background: #0b111d; color: #d9e2f2; }
+.server-order-controls button:hover:not(:disabled) { border-color: var(--cyan); color: var(--cyan); }
+.server-order-controls button:disabled { opacity: .35; cursor: not-allowed; }
 .server-version { color: var(--cyan); font: 11px 'DM Mono', monospace; }
 .server-meta, .row-actions { display: flex; gap: 12px; align-items: center; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .pill, .role { display: inline-block; padding: 4px 8px; border: 1px solid #41516b; font: 10px 'DM Mono', monospace; letter-spacing: .06em; }
 .role-admin { color: #ff9eb1; border-color: #7d4050; }.role-editor { color: var(--cyan); }.role-auditor { color: #c7b7ff; border-color: #554d78; }
 
@@ -256,6 +267,9 @@ input:disabled { opacity: .6; }
 }
 @media (max-width: 620px) {
     .form-grid { grid-template-columns: 1fr; }.wide { grid-column: auto; }.server-row { grid-template-columns: 1fr; }.module-row { grid-template-columns: 70px 1fr; }.module-row .danger-link { grid-column: 2; }.audit-row summary { grid-template-columns: 1fr 1fr; }.account .text-button:first-of-type { display: none; }
+    .server-panel-heading { align-items: stretch; flex-direction: column; gap: 12px; }
+    .server-panel-actions { flex-wrap: wrap; }
+    .server-row > .row-actions { justify-content: space-between; }
     .launcher-card .section-heading { align-items: flex-start; flex-direction: column; }
     .launcher-url-row { grid-template-columns: 1fr; }
     .launcher-url-row button { justify-self: start; }

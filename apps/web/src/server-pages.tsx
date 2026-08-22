@@ -94,11 +94,12 @@ function ServerHeader({ detail }: { detail: ServerDetail }): ReactNode {
 interface ServerFormProps {
     project: Project
     server?: ManagedServer
+    initialSortOrder?: number
     canEdit: boolean
     onDone: (serverId?: string) => void
 }
 
-function ServerForm({ project, server, canEdit, onDone }: ServerFormProps): ReactNode {
+function ServerForm({ project, server, initialSortOrder, canEdit, onDone }: ServerFormProps): ReactNode {
     const { t } = useTranslation()
     const queryClient = useQueryClient()
     const initialLoader = server?.forgeVersion ? 'forge' : server?.fabricVersion ? 'fabric' : 'none'
@@ -195,7 +196,7 @@ function ServerForm({ project, server, canEdit, onDone }: ServerFormProps): Reac
                 fabricVersion: loader === 'fabric' ? loaderVersion : null,
                 mainServer: data.get('mainServer') === 'on',
                 autoconnect: data.get('autoconnect') === 'on',
-                sortOrder: Number(data.get('sortOrder')),
+                sortOrder: server?.sortOrder ?? initialSortOrder ?? 0,
                 javaOptions: supported || suggested || ramMinimum || ramRecommended ? {
                     ...(supported ? { supported } : {}),
                     ...(suggested ? { suggestedMajor: suggested } : {}),
@@ -291,7 +292,6 @@ function ServerForm({ project, server, canEdit, onDone }: ServerFormProps): Reac
                                     : t('manualVersionHint')}
             </small>}
         </label>
-        <label>{t('order')}<input name="sortOrder" type="number" min="0" defaultValue={server?.sortOrder ?? 0} disabled={!canEdit} /></label>
         <label>{t('javaSupported')}<input name="javaSupported" defaultValue={(server?.javaOptions as { supported?: string } | null)?.supported} placeholder=">=17" disabled={!canEdit} /></label>
         <label>{t('javaSuggested')}<input name="javaSuggested" type="number" min="8" defaultValue={(server?.javaOptions as { suggestedMajor?: number } | null)?.suggestedMajor} disabled={!canEdit} /></label>
         <label>{t('ramMinimum')}<input name="ramMinimum" type="number" min="512" step="512" defaultValue={(server?.javaOptions as { ram?: { minimum?: number } } | null)?.ram?.minimum} disabled={!canEdit} /></label>
@@ -335,6 +335,7 @@ export function NewServerPage({ user }: { user: ApiUser }): ReactNode {
         <section className="card">
             <ServerForm
                 project={detail.data.project}
+                initialSortOrder={Math.max(-1, ...detail.data.servers.map(server => server.sortOrder)) + 1}
                 canEdit
                 onDone={serverId => {
                     void navigate(serverId
