@@ -668,14 +668,45 @@ async function materializeSnapshot(snapshot: ProjectSnapshot, root: string): Pro
     }
 }
 
-export function orderDistribution(distribution: Distribution, snapshot: ProjectSnapshot): void {
-    const serverOrder = new Map(snapshot.servers.map((server, index) => [server.serverKey, index]))
-    distribution.servers.sort((left, right) => (serverOrder.get(left.id) ?? 9999) - (serverOrder.get(right.id) ?? 9999))
-    for (const server of distribution.servers) {
-        const source = snapshot.servers.find(value => value.serverKey === server.id)
-        if (!source) {
-            continue
+function duplicateValues(values: string[]): string[] {
+    const seen = new Set<string>()
+    const duplicates = new Set<string>()
+    for (const value of values) {
+        if (seen.has(value)) {
+            duplicates.add(value)
         }
+        seen.add(value)
+    }
+    return [...duplicates]
+}
+
+export function orderDistribution(distribution: Distribution, snapshot: ProjectSnapshot): void {
+    const snapshotServers = snapshot.servers.map(server => ({
+        id: ServerStructure.getEffectiveId(server.serverKey, new MinecraftVersion(server.minecraftVersion)),
+        server
+    }))
+    const snapshotIds = snapshotServers.map(value => value.id)
+    const generatedIds = distribution.servers.map(server => server.id)
+    const snapshotIdSet = new Set(snapshotIds)
+    const generatedIdSet = new Set(generatedIds)
+    const mismatches = [
+        ['duplicate snapshot IDs', duplicateValues(snapshotIds)],
+        ['duplicate generated IDs', duplicateValues(generatedIds)],
+        ['missing generated IDs', snapshotIds.filter(id => !generatedIdSet.has(id))],
+        ['unexpected generated IDs', generatedIds.filter(id => !snapshotIdSet.has(id))]
+    ] as const
+    const mismatchDetails = mismatches
+        .filter(([, ids]) => ids.length > 0)
+        .map(([label, ids]) => `${label}: ${ids.join(', ')}`)
+    if (mismatchDetails.length > 0) {
+        throw new PermanentJobError(`Generated distribution server IDs do not match snapshot (${mismatchDetails.join('; ')})`)
+    }
+
+    const serverOrder = new Map(snapshotIds.map((id, index) => [id, index]))
+    const sourceById = new Map(snapshotServers.map(value => [value.id, value.server]))
+    distribution.servers.sort((left, right) => serverOrder.get(left.id)! - serverOrder.get(right.id)!)
+    for (const server of distribution.servers) {
+        const source = sourceById.get(server.id)!
         const moduleOrder = new Map(source.modules.map(module => [module.upload?.originalName.toLowerCase(), module.sortOrder]))
         server.modules.sort((left: Module, right: Module) => {
             const leftName = basename(left.artifact.url).toLowerCase()
