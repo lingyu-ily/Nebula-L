@@ -17,6 +17,20 @@ export interface Project {
     launcherUrl: string
     stableDistributionReady?: boolean
     disabled: boolean
+    disabledAt: string | null
+}
+
+export interface ProjectDeletion {
+    id: string
+    status: 'QUEUED' | 'RUNNING' | 'FAILED'
+    attempts: number
+    maxAttempts: number
+    error: string | null
+    requestedAt: string
+}
+
+export interface DisabledProject extends Project {
+    deletion: ProjectDeletion | null
 }
 
 export interface Upload {

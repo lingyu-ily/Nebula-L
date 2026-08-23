@@ -57,6 +57,8 @@ async function mockProjectPage(
                     status
                 }, status)
             }
+        } else if (url.pathname === '/api/v1/projects/disabled' && request.method() === 'GET') {
+            await fulfillJson(route, { items: [] })
         } else if (url.pathname === '/api/v1/projects' && request.method() === 'GET') {
             await fulfillJson(route, { items: [] })
         } else if (url.pathname.endsWith('/jobs') || url.pathname.endsWith('/releases')) {

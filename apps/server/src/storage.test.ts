@@ -2,8 +2,10 @@ import { mkdtemp, readdir, rm, stat } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { Readable } from 'stream'
+import { DeleteObjectsCommand, ListObjectsV2Command, type S3Client } from '@aws-sdk/client-s3'
 import { describe, expect, it } from 'vitest'
 import {
+    deleteObjectPrefix,
     isNoSuchKeyError,
     PRIVATE_UPLOAD_CONTENT_TYPE,
     privateUploadObjectKey,
@@ -13,6 +15,66 @@ import {
     storedObjectMetadataMatches,
     storedUploadMetadataMatches
 } from './storage.js'
+
+describe('project object cleanup', () => {
+    it('lists every page before deleting objects in RustFS batches', async () => {
+        const commands: unknown[] = []
+        let listPage = 0
+        const storageClient = {
+            send: async (command: unknown) => {
+                commands.push(command)
+                if (command instanceof ListObjectsV2Command) {
+                    listPage += 1
+                    return listPage === 1 ? {
+                        Contents: [{ Key: 'public/test/a' }, { Key: 'public/test/b' }],
+                        IsTruncated: true,
+                        NextContinuationToken: 'page-2'
+                    } : {
+                        Contents: [{ Key: 'public/test/c' }],
+                        IsTruncated: false
+                    }
+                }
+                if (command instanceof DeleteObjectsCommand) return {}
+                throw new Error('Unexpected command')
+            }
+        } as unknown as S3Client
+        let heartbeats = 0
+
+        await expect(deleteObjectPrefix(
+            'public/test/',
+            async () => { heartbeats += 1 },
+            storageClient,
+            'bucket'
+        )).resolves.toBe(3)
+
+        expect(commands.filter(command => command instanceof ListObjectsV2Command)).toHaveLength(2)
+        const deletion = commands.find(command => command instanceof DeleteObjectsCommand)!
+        expect(deletion.input.Delete?.Objects).toEqual([
+            { Key: 'public/test/a' },
+            { Key: 'public/test/b' },
+            { Key: 'public/test/c' }
+        ])
+        expect(heartbeats).toBe(3)
+    })
+
+    it('fails cleanup when RustFS reports a partial batch error', async () => {
+        const storageClient = {
+            send: async (command: unknown) => command instanceof ListObjectsV2Command ? {
+                Contents: [{ Key: 'private/uploads/project-1/file' }],
+                IsTruncated: false
+            } : {
+                Errors: [{ Key: 'private/uploads/project-1/file', Code: 'AccessDenied' }]
+            }
+        } as unknown as S3Client
+
+        await expect(deleteObjectPrefix(
+            'private/uploads/project-1/',
+            async () => undefined,
+            storageClient,
+            'bucket'
+        )).rejects.toThrow('private/uploads/project-1/file')
+    })
+})
 
 describe('release object layout', () => {
     it('keeps stable and immutable paths separate', () => {

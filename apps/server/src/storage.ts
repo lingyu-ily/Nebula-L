@@ -11,6 +11,7 @@ import {
     HeadBucketCommand,
     HeadObjectCommand,
     type HeadObjectCommandOutput,
+    ListObjectsV2Command,
     PutObjectCommand,
     S3Client
 } from '@aws-sdk/client-s3'
@@ -422,17 +423,53 @@ export async function verifyStoredUpload(
     }
 }
 
-export async function deleteObjects(keys: string[]): Promise<void> {
+export async function deleteObjects(
+    keys: string[],
+    storageClient = getStorageClient(),
+    bucket = getConfig().rustfs.bucket
+): Promise<void> {
     for (let index = 0; index < keys.length; index += 1000) {
         const batch = keys.slice(index, index + 1000)
         if (batch.length === 0) {
             continue
         }
-        await getStorageClient().send(new DeleteObjectsCommand({
-            Bucket: getConfig().rustfs.bucket,
+        const result = await storageClient.send(new DeleteObjectsCommand({
+            Bucket: bucket,
             Delete: { Objects: batch.map(Key => ({ Key })), Quiet: true }
         }))
+        if (result.Errors?.length) {
+            throw new Error(`RustFS failed to delete ${result.Errors.map(error => error.Key ?? 'unknown object').join(', ')}`)
+        }
     }
+}
+
+export async function deleteObjectPrefix(
+    prefix: string,
+    onProgress: () => Promise<void> = async () => undefined,
+    storageClient = getStorageClient(),
+    bucket = getConfig().rustfs.bucket
+): Promise<number> {
+    const keys: string[] = []
+    let continuationToken: string | undefined
+    do {
+        const page = await storageClient.send(new ListObjectsV2Command({
+            Bucket: bucket,
+            Prefix: prefix,
+            ContinuationToken: continuationToken
+        }))
+        keys.push(...(page.Contents ?? []).flatMap(item => item.Key ? [item.Key] : []))
+        await onProgress()
+        if (page.IsTruncated && !page.NextContinuationToken) {
+            throw new Error(`RustFS did not return a continuation token for ${prefix}`)
+        }
+        continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined
+    } while (continuationToken)
+
+    for (let index = 0; index < keys.length; index += 1000) {
+        await deleteObjects(keys.slice(index, index + 1000), storageClient, bucket)
+        await onProgress()
+    }
+    return keys.length
 }
 
 export async function checkStorage(): Promise<void> {

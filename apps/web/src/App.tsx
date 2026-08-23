@@ -10,6 +10,7 @@ import {
     setCsrfToken,
     type AuditLog,
     type AuthResponse,
+    type DisabledProject,
     type Job,
     type PaginatedResponse,
     type Project,
@@ -147,9 +148,38 @@ function ProjectsPage({ user }: { user: ApiUser }): ReactNode {
     const { t } = useTranslation()
     const queryClient = useQueryClient()
     const projects = useQuery({ queryKey: ['projects'], queryFn: () => api<{ items: Project[] }>('/api/v1/projects') })
+    const disabledProjects = useQuery({
+        queryKey: ['projects', 'disabled'],
+        queryFn: () => api<{ items: DisabledProject[] }>('/api/v1/projects/disabled'),
+        enabled: user.role === 'ADMIN',
+        refetchInterval: query => query.state.data?.items.some(project =>
+            project.deletion?.status === 'QUEUED' || project.deletion?.status === 'RUNNING'
+        ) ? 3000 : false
+    })
     const createProject = useMutation({
         mutationFn: (value: unknown) => api('/api/v1/projects', { method: 'POST', ...jsonBody(value) }),
         onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['projects'] })
+    })
+    const restoreProject = useMutation({
+        mutationFn: ({ id, revision }: { id: string, revision: number }) => api(`/api/v1/projects/${id}/restore`, {
+            method: 'POST',
+            ...jsonBody({ revision })
+        }),
+        onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['projects'] })
+    })
+    const purgeProject = useMutation({
+        mutationFn: ({ id, revision, confirmationName }: { id: string, revision: number, confirmationName: string }) => api(`/api/v1/projects/${id}/purge`, {
+            method: 'POST',
+            ...jsonBody({ revision, confirmationName })
+        }),
+        onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['projects', 'disabled'] })
+    })
+    const retryPurge = useMutation({
+        mutationFn: ({ id, revision }: { id: string, revision: number }) => api(`/api/v1/projects/${id}/purge/retry`, {
+            method: 'POST',
+            ...jsonBody({ revision })
+        }),
+        onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['projects', 'disabled'] })
     })
     const submit = (event: FormEvent<HTMLFormElement>): void => {
         event.preventDefault()
@@ -161,6 +191,21 @@ function ProjectsPage({ user }: { user: ApiUser }): ReactNode {
             rss: String(data.get('rss'))
         })
         event.currentTarget.reset()
+    }
+    const confirmRestore = (project: DisabledProject): void => {
+        if (window.confirm(t('confirmRestoreProject', { name: project.name }))) {
+            restoreProject.mutate({ id: project.id, revision: project.draftRevision })
+        }
+    }
+    const confirmPurge = (project: DisabledProject): void => {
+        if (!window.confirm(t('confirmPurgeProject', { name: project.name }))) return
+        const confirmationName = window.prompt(t('purgeProjectNamePrompt', { name: project.name }))
+        if (confirmationName == null) return
+        if (confirmationName !== project.name) {
+            window.alert(t('purgeProjectNameMismatch'))
+            return
+        }
+        purgeProject.mutate({ id: project.id, revision: project.draftRevision, confirmationName })
     }
     return <>
         <header className="page-header"><div><p className="eyebrow">CONTROL PLANE</p><h1>{t('projects')}</h1></div></header>
@@ -183,6 +228,44 @@ function ProjectsPage({ user }: { user: ApiUser }): ReactNode {
             {!projects.isLoading && projects.data?.items.length === 0 && <div className="empty">{t('noProjects')}</div>}
         </div>
         <ErrorNotice error={projects.error} />
+        {user.role === 'ADMIN' && <details className="card disclosure disabled-projects">
+            <summary>{t('disabledProjects')} ({disabledProjects.data?.items.length ?? 0})</summary>
+            <div className="disabled-project-list">
+                {disabledProjects.data?.items.map(project => {
+                    const deletion = project.deletion
+                    const restorePending = restoreProject.isPending && restoreProject.variables.id === project.id
+                    const purgePending = purgeProject.isPending && purgeProject.variables.id === project.id
+                    const retryPending = retryPurge.isPending && retryPurge.variables.id === project.id
+                    return <article className="disabled-project-card" key={project.id}>
+                        <div>
+                            <h3>{project.name}</h3>
+                            <p><code>/{project.slug}</code> · {t('disabledAt')} {project.disabledAt ? new Date(project.disabledAt).toLocaleString() : '—'}</p>
+                            {deletion && <span className={`pill deletion-${deletion.status.toLowerCase()}`}>
+                                {deletion.status === 'QUEUED' ? t('purgeQueued') : deletion.status === 'RUNNING' ? t('purgeRunning') : t('purgeFailed')}
+                            </span>}
+                            {deletion?.status === 'FAILED' && deletion.error && <small className="error-text">{deletion.error}</small>}
+                        </div>
+                        <div className="disabled-project-actions">
+                            {!deletion && <>
+                                <button className="secondary" disabled={restorePending || purgePending} onClick={() => confirmRestore(project)}>
+                                    {restorePending ? t('restoringProject') : t('restoreProject')}
+                                </button>
+                                <button className="danger-button" disabled={restorePending || purgePending} onClick={() => confirmPurge(project)}>
+                                    {purgePending ? t('queueingPurge') : t('purgeProject')}
+                                </button>
+                            </>}
+                            {deletion?.status === 'FAILED' && <button
+                                className="danger-button"
+                                disabled={retryPending}
+                                onClick={() => retryPurge.mutate({ id: project.id, revision: project.draftRevision })}
+                            >{retryPending ? t('queueingPurge') : t('retryPurge')}</button>}
+                        </div>
+                    </article>
+                })}
+                {!disabledProjects.isLoading && disabledProjects.data?.items.length === 0 && <div className="empty">{t('noDisabledProjects')}</div>}
+            </div>
+            <ErrorNotice error={disabledProjects.error ?? restoreProject.error ?? purgeProject.error ?? retryPurge.error} />
+        </details>}
     </>
 }
 

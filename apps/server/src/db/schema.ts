@@ -3,6 +3,7 @@ import {
     boolean,
     char,
     datetime,
+    index,
     int,
     json,
     mysqlEnum,
@@ -51,9 +52,30 @@ export const projects = mysqlTable('projects', {
     draftRevision: bigint('draft_revision', { mode: 'number', unsigned: true }).notNull().default(0),
     activeReleaseId: char('active_release_id', { length: 36 }),
     disabled: boolean('disabled').notNull().default(false),
+    disabledAt: datetime('disabled_at', { mode: 'date', fsp: 3 }),
     createdBy: char('created_by', { length: 36 }).notNull(),
     ...timestamps
 }, table => [uniqueIndex('projects_slug_uq').on(table.slug)])
+
+export const projectDeletionTasks = mysqlTable('project_deletion_tasks', {
+    id: char('id', { length: 36 }).primaryKey(),
+    projectId: char('project_id', { length: 36 }).notNull(),
+    projectSlug: varchar('project_slug', { length: 64 }).notNull(),
+    projectName: varchar('project_name', { length: 128 }).notNull(),
+    status: mysqlEnum('status', ['QUEUED', 'RUNNING', 'FAILED']).notNull().default('QUEUED'),
+    attempts: int('attempts').notNull().default(0),
+    maxAttempts: int('max_attempts').notNull().default(3),
+    availableAt: datetime('available_at', { mode: 'date', fsp: 3 }).notNull(),
+    lockedBy: varchar('locked_by', { length: 128 }),
+    lockedAt: datetime('locked_at', { mode: 'date', fsp: 3 }),
+    heartbeatAt: datetime('heartbeat_at', { mode: 'date', fsp: 3 }),
+    errorText: text('error_text'),
+    requestedBy: char('requested_by', { length: 36 }).notNull(),
+    ...timestamps
+}, table => [
+    uniqueIndex('project_deletion_tasks_project_uq').on(table.projectId),
+    index('project_deletion_tasks_claim_idx').on(table.status, table.availableAt, table.createdAt)
+])
 
 export const servers = mysqlTable('servers', {
     id: char('id', { length: 36 }).primaryKey(),

@@ -1061,8 +1061,10 @@ export async function importCurseForgeJob(job: JobRow): Promise<void> {
 async function claimJob(workerId: string): Promise<JobRow | undefined> {
     return withTransaction(async connection => {
         const [rows] = await connection.query<JobRow[]>(
-            `SELECT * FROM jobs WHERE status = 'QUEUED' AND available_at <= UTC_TIMESTAMP(3)
-             ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED`
+            `SELECT j.* FROM jobs j
+             INNER JOIN projects p ON p.id = j.project_id AND p.disabled = FALSE
+             WHERE j.status = 'QUEUED' AND j.available_at <= UTC_TIMESTAMP(3)
+             ORDER BY j.created_at, j.id LIMIT 1 FOR UPDATE SKIP LOCKED`
         )
         const job = rows[0]
         if (!job) {

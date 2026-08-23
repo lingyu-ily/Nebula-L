@@ -40,8 +40,18 @@ interface ProjectRow extends RowDataPacket {
     draft_revision: number
     active_release_id: string | null
     disabled: number
+    disabled_at: Date | null
     created_at: Date
     updated_at: Date
+}
+
+interface DisabledProjectRow extends ProjectRow {
+    deletion_id: string | null
+    deletion_status: 'QUEUED' | 'RUNNING' | 'FAILED' | null
+    deletion_attempts: number | null
+    deletion_max_attempts: number | null
+    deletion_error: string | null
+    deletion_requested_at: Date | null
 }
 
 interface ServerRow extends RowDataPacket {
@@ -109,6 +119,7 @@ function mapProject(row: ProjectRow): Record<string, unknown> {
         draftRevision: Number(row.draft_revision),
         activeReleaseId: row.active_release_id,
         disabled: Boolean(row.disabled),
+        disabledAt: row.disabled_at,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         launcherUrl: getLauncherUrl(row.slug)
@@ -264,6 +275,18 @@ async function replaceUntrackedRules(
     }
 }
 
+async function lockDisabledProject(connection: PoolConnection, projectId: string, expectedRevision: number): Promise<ProjectRow> {
+    const [rows] = await connection.query<ProjectRow[]>('SELECT * FROM projects WHERE id = ? FOR UPDATE', [projectId])
+    const project = rows[0]
+    if (!project?.disabled) {
+        throw new HttpError(404, 'Disabled distribution not found')
+    }
+    if (Number(project.draft_revision) !== expectedRevision) {
+        throw new HttpError(409, 'Draft changed', 'Reload the distribution before continuing')
+    }
+    return project
+}
+
 const LAUNCHER_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 
 async function assertLauncherImageUploads(
@@ -353,6 +376,35 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
     app.get('/api/v1/projects', { preHandler: requireRole('ADMIN', 'EDITOR', 'AUDITOR') }, async () => {
         const [rows] = await getPool().query<ProjectRow[]>('SELECT * FROM projects WHERE disabled = FALSE ORDER BY name')
         return { items: rows.map(mapProject) }
+    })
+
+    app.get('/api/v1/projects/disabled', { preHandler: requireRole('ADMIN') }, async () => {
+        const [rows] = await getPool().query<DisabledProjectRow[]>(
+            `SELECT p.*,
+                    d.id AS deletion_id,
+                    d.status AS deletion_status,
+                    d.attempts AS deletion_attempts,
+                    d.max_attempts AS deletion_max_attempts,
+                    d.error_text AS deletion_error,
+                    d.created_at AS deletion_requested_at
+             FROM projects p
+             LEFT JOIN project_deletion_tasks d ON d.project_id = p.id
+             WHERE p.disabled = TRUE
+             ORDER BY p.disabled_at DESC, p.name, p.id`
+        )
+        return {
+            items: rows.map(row => ({
+                ...mapProject(row),
+                deletion: row.deletion_id ? {
+                    id: row.deletion_id,
+                    status: row.deletion_status,
+                    attempts: Number(row.deletion_attempts),
+                    maxAttempts: Number(row.deletion_max_attempts),
+                    error: row.deletion_error,
+                    requestedAt: row.deletion_requested_at
+                } : null
+            }))
+        }
     })
 
     app.get('/api/v1/projects/:projectId', { preHandler: requireRole('ADMIN', 'EDITOR', 'AUDITOR') }, async request => {
@@ -463,7 +515,10 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
         const expectedRevision = getRevision(request)
         await withTransaction(async connection => {
             const before = await lockProject(connection, projectId, expectedRevision)
-            await connection.execute('UPDATE projects SET disabled = TRUE, updated_at = UTC_TIMESTAMP(3) WHERE id = ?', [projectId])
+            await connection.execute(
+                'UPDATE projects SET disabled = TRUE, disabled_at = UTC_TIMESTAMP(3), updated_at = UTC_TIMESTAMP(3) WHERE id = ?',
+                [projectId]
+            )
             await writeAudit(connection, auditContextFromRequest(request), {
                 action: 'project.disabled',
                 entityType: 'project',
@@ -474,6 +529,111 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
             })
         })
         return { disabled: true }
+    })
+
+    app.post('/api/v1/projects/:projectId/restore', { preHandler: requireRole('ADMIN') }, async request => {
+        requireCsrf(request)
+        const { projectId } = request.params as { projectId: string }
+        const expectedRevision = getRevision(request)
+        await withTransaction(async connection => {
+            const before = await lockDisabledProject(connection, projectId, expectedRevision)
+            const [deletions] = await connection.query<(RowDataPacket & { id: string })[]>(
+                'SELECT id FROM project_deletion_tasks WHERE project_id = ? FOR UPDATE',
+                [projectId]
+            )
+            if (deletions[0]) {
+                throw new HttpError(409, 'Permanent deletion already requested', 'This distribution can only be purged or retried')
+            }
+            await connection.execute(
+                'UPDATE projects SET disabled = FALSE, disabled_at = NULL, updated_at = UTC_TIMESTAMP(3) WHERE id = ?',
+                [projectId]
+            )
+            await writeAudit(connection, auditContextFromRequest(request), {
+                action: 'project.restored',
+                entityType: 'project',
+                entityId: projectId,
+                projectId,
+                before: { disabled: true },
+                after: { disabled: false, name: before.name }
+            })
+        })
+        return { restored: true }
+    })
+
+    app.post('/api/v1/projects/:projectId/purge', { preHandler: requireRole('ADMIN') }, async (request, reply) => {
+        requireCsrf(request)
+        const { projectId } = request.params as { projectId: string }
+        const expectedRevision = getRevision(request)
+        const confirmationName = (request.body as Record<string, unknown> | undefined)?.confirmationName
+        if (typeof confirmationName !== 'string' || !confirmationName) {
+            throw new HttpError(400, 'Distribution name confirmation required')
+        }
+        const deletionId = randomUUID()
+        await withTransaction(async connection => {
+            const project = await lockDisabledProject(connection, projectId, expectedRevision)
+            if (confirmationName !== project.name) {
+                throw new HttpError(400, 'Distribution name does not match')
+            }
+            const [existing] = await connection.query<(RowDataPacket & { id: string })[]>(
+                'SELECT id FROM project_deletion_tasks WHERE project_id = ? FOR UPDATE',
+                [projectId]
+            )
+            if (existing[0]) {
+                throw new HttpError(409, 'Permanent deletion already requested')
+            }
+            await connection.execute(
+                `INSERT INTO project_deletion_tasks (
+                    id, project_id, project_slug, project_name, status, attempts, max_attempts,
+                    available_at, requested_by, created_at, updated_at
+                 ) VALUES (?, ?, ?, ?, 'QUEUED', 0, 3, UTC_TIMESTAMP(3), ?, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))`,
+                [deletionId, projectId, project.slug, project.name, request.auth.id]
+            )
+            await writeAudit(connection, auditContextFromRequest(request), {
+                action: 'project.purge_requested',
+                entityType: 'project',
+                entityId: projectId,
+                projectId,
+                after: { deletionId }
+            })
+        })
+        return reply.status(202).send({ queued: true, deletionId })
+    })
+
+    app.post('/api/v1/projects/:projectId/purge/retry', { preHandler: requireRole('ADMIN') }, async (request, reply) => {
+        requireCsrf(request)
+        const { projectId } = request.params as { projectId: string }
+        const expectedRevision = getRevision(request)
+        let deletionId = ''
+        await withTransaction(async connection => {
+            await lockDisabledProject(connection, projectId, expectedRevision)
+            const [rows] = await connection.query<(RowDataPacket & { id: string, status: string })[]>(
+                'SELECT id, status FROM project_deletion_tasks WHERE project_id = ? FOR UPDATE',
+                [projectId]
+            )
+            const deletion = rows[0]
+            if (!deletion) {
+                throw new HttpError(404, 'Permanent deletion request not found')
+            }
+            if (deletion.status !== 'FAILED') {
+                throw new HttpError(409, 'Permanent deletion is not retryable')
+            }
+            deletionId = deletion.id
+            await connection.execute(
+                `UPDATE project_deletion_tasks
+                 SET status = 'QUEUED', attempts = 0, available_at = UTC_TIMESTAMP(3),
+                     locked_by = NULL, locked_at = NULL, heartbeat_at = NULL, error_text = NULL
+                 WHERE id = ?`,
+                [deletionId]
+            )
+            await writeAudit(connection, auditContextFromRequest(request), {
+                action: 'project.purge_retried',
+                entityType: 'project',
+                entityId: projectId,
+                projectId,
+                after: { deletionId }
+            })
+        })
+        return reply.status(202).send({ queued: true, deletionId })
     })
 
     app.post('/api/v1/projects/:projectId/servers', { preHandler: requireRole('ADMIN', 'EDITOR') }, async (request, reply) => {
