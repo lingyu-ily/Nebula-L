@@ -45,6 +45,7 @@ const en = {
         newFolder: 'New folder', newFolderName: 'Folder name', rename: 'Rename', renamePrompt: 'New file or folder name', move: 'Move', moveDestinationPrompt: 'Destination folder under Files (leave blank for the Files root)', replace: 'Replace',
         displayNamePrompt: 'Display name', optionalModePrompt: 'Optional mode: REQUIRED, OPTIONAL_ON, or OPTIONAL_OFF', optionalModeInvalid: 'Enter REQUIRED, OPTIONAL_ON, or OPTIONAL_OFF.',
         confirmDeleteFolder: 'Delete this folder, {{directoryCount}} folder(s), and {{moduleCount}} file(s)?', location: 'Location', searchFiles: 'Search this location', items: 'items', sortBy: 'Sort by', size: 'Size', folder: 'Folder', folderEmpty: 'This folder is empty.', working: 'Applying changes…',
+        dropFilesHere: 'Drop files here to upload', uploadBatchProgress: 'Uploading {{current}}/{{total}}: {{fileName}}', uploadBatchComplete: '{{count}} file(s) uploaded.', uploadBatchFailed: '{{completed}}/{{total}} file(s) uploaded. {{fileName}} failed: {{reason}}', uploadUnavailableHere: 'Open an uploadable folder before dropping files.', uploadDirectoriesUnsupported: 'Folder uploads are not supported. Drop individual files instead.',
         sessionExpired: 'Session expired. Sign in again.'
     }
 }
@@ -92,6 +93,7 @@ const zhTW = {
         newFolder: '新增資料夾', newFolderName: '資料夾名稱', rename: '重新命名', renamePrompt: '新的檔案或資料夾名稱', move: '移動', moveDestinationPrompt: 'Files 下的目的資料夾（留空代表 Files 根目錄）', replace: '替換',
         displayNamePrompt: '顯示名稱', optionalModePrompt: '選用狀態：REQUIRED、OPTIONAL_ON 或 OPTIONAL_OFF', optionalModeInvalid: '請輸入 REQUIRED、OPTIONAL_ON 或 OPTIONAL_OFF。',
         confirmDeleteFolder: '確定刪除此資料夾、{{directoryCount}} 個子資料夾及 {{moduleCount}} 個檔案？', location: '位置', searchFiles: '搜尋目前位置', items: '個項目', sortBy: '排序', size: '大小', folder: '資料夾', folderEmpty: '此資料夾是空的。', working: '正在套用變更…',
+        dropFilesHere: '將檔案拖放到這裡上傳', uploadBatchProgress: '正在上傳 {{current}}／{{total}}：{{fileName}}', uploadBatchComplete: '已上傳 {{count}} 個檔案。', uploadBatchFailed: '已上傳 {{completed}}／{{total}} 個檔案；{{fileName}} 失敗：{{reason}}', uploadUnavailableHere: '請先開啟可上傳的資料夾，再拖放檔案。', uploadDirectoriesUnsupported: '不支援上傳整個資料夾，請改為拖放個別檔案。',
         sessionExpired: '登入已失效，請重新登入。'
     }
 }

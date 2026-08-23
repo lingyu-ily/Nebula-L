@@ -3,6 +3,7 @@ import {
     useMemo,
     useRef,
     useState,
+    type DragEvent,
     type FormEvent,
     type ReactNode
 } from 'react'
@@ -29,6 +30,24 @@ import { Link, NavLink, Navigate, useNavigate, useParams } from './router.js'
 type OptionalMode = ManagedModule['optionalMode']
 type ModuleType = ManagedModule['type']
 type ExplorerSort = 'name' | 'type' | 'size' | 'updated'
+interface UploadProgress {
+    completed: number
+    total: number
+    currentFile: string
+}
+
+function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error)
+}
+
+function containsDroppedDirectory(items: DataTransferItemList): boolean {
+    return Array.from(items).some(item => {
+        const entry = (item as DataTransferItem & {
+            webkitGetAsEntry?: () => { isDirectory: boolean } | null
+        }).webkitGetAsEntry?.()
+        return entry?.isDirectory === true
+    })
+}
 
 function ErrorNotice({ error }: { error: unknown }): ReactNode {
     if (!error) return null
@@ -1175,6 +1194,10 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
     const [sortBy, setSortBy] = useState<ExplorerSort>('name')
     const [direction, setDirection] = useState<'asc' | 'desc'>('asc')
     const [selectedKey, setSelectedKey] = useState('')
+    const [dragActive, setDragActive] = useState(false)
+    const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null)
+    const [uploadSuccess, setUploadSuccess] = useState<number | null>(null)
+    const [uploadInputError, setUploadInputError] = useState<string | null>(null)
     const uploadInput = useRef<HTMLInputElement>(null)
     const replaceInput = useRef<HTMLInputElement>(null)
     const entries = useMemo(
@@ -1195,10 +1218,22 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
         mutationFn: (operation: () => Promise<unknown>) => operation(),
         onSuccess: () => {
             setSelectedKey('')
+        },
+        onSettled: () => {
             invalidateServer(queryClient, detail.project.id, detail.server.id)
         }
     })
-    useEffect(() => setSelectedKey(''), [currentPath])
+    useEffect(() => {
+        setSelectedKey('')
+        setDragActive(false)
+        setUploadSuccess(null)
+        setUploadInputError(null)
+    }, [currentPath])
+    useEffect(() => {
+        if (uploadSuccess == null) return
+        const timer = window.setTimeout(() => setUploadSuccess(null), 5000)
+        return (): void => window.clearTimeout(timer)
+    }, [uploadSuccess])
 
     const upload = async (file: File): Promise<{ id: string }> => {
         const body = new FormData()
@@ -1221,27 +1256,99 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
             }
         ))
     }
-    const handleUpload = (file: File): void => {
-        if (!target) return
+    const handleUploads = (files: File[]): void => {
+        if (!target || files.length === 0 || action.isPending) return
+        const batchTarget = target
+        const total = files.length
+        setUploadSuccess(null)
+        setUploadInputError(null)
         action.mutate(async () => {
-            const stored = await upload(file)
-            const relativePath = target.type === 'File'
-                ? (target.relativeDirectory ? `${target.relativeDirectory}/${file.name}` : file.name)
-                : null
-            return api(`/api/v1/projects/${detail.project.id}/servers/${detail.server.id}/modules`, {
-                method: 'POST',
-                ...jsonBody({
-                    revision: detail.project.draftRevision,
-                    uploadId: stored.id,
-                    type: target.type,
-                    displayName: file.name,
-                    fileName: file.name,
-                    relativePath,
-                    optionalMode: target.optionalMode,
-                    sortOrder: detail.server.modules.length
-                })
-            })
+            let completed = 0
+            let revision = detail.project.draftRevision
+            try {
+                for (const file of files) {
+                    setUploadProgress({ completed, total, currentFile: file.name })
+                    let stored: { id: string }
+                    try {
+                        stored = await upload(file)
+                    } catch (error) {
+                        throw new Error(t('uploadBatchFailed', {
+                            completed,
+                            total,
+                            fileName: file.name,
+                            reason: errorMessage(error)
+                        }))
+                    }
+                    const relativePath = batchTarget.type === 'File'
+                        ? (batchTarget.relativeDirectory ? `${batchTarget.relativeDirectory}/${file.name}` : file.name)
+                        : null
+                    try {
+                        const created = await api<{ id: string, draftRevision: number }>(
+                            `/api/v1/projects/${detail.project.id}/servers/${detail.server.id}/modules`,
+                            {
+                                method: 'POST',
+                                ...jsonBody({
+                                    revision,
+                                    uploadId: stored.id,
+                                    type: batchTarget.type,
+                                    displayName: file.name,
+                                    fileName: file.name,
+                                    relativePath,
+                                    optionalMode: batchTarget.optionalMode,
+                                    sortOrder: detail.server.modules.length + completed
+                                })
+                            }
+                        )
+                        revision = created.draftRevision
+                    } catch (error) {
+                        await api(`/api/v1/projects/${detail.project.id}/uploads/${stored.id}`, {
+                            method: 'DELETE'
+                        }).catch(() => undefined)
+                        throw new Error(t('uploadBatchFailed', {
+                            completed,
+                            total,
+                            fileName: file.name,
+                            reason: errorMessage(error)
+                        }))
+                    }
+                    completed += 1
+                }
+                setUploadSuccess(completed)
+                return { uploaded: completed }
+            } finally {
+                setUploadProgress(null)
+            }
         })
+    }
+    const handleDragEnter = (event: DragEvent<HTMLDivElement>): void => {
+        if (!canEdit || !target || action.isPending) return
+        event.preventDefault()
+        setDragActive(true)
+    }
+    const handleDragOver = (event: DragEvent<HTMLDivElement>): void => {
+        event.preventDefault()
+        if (!canEdit || !target || action.isPending) return
+        event.dataTransfer.dropEffect = 'copy'
+        setDragActive(true)
+    }
+    const handleDragLeave = (event: DragEvent<HTMLDivElement>): void => {
+        const nextTarget = event.relatedTarget
+        if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return
+        setDragActive(false)
+    }
+    const handleDrop = (event: DragEvent<HTMLDivElement>): void => {
+        event.preventDefault()
+        setDragActive(false)
+        if (!canEdit || action.isPending) return
+        if (!target) {
+            setUploadInputError(t('uploadUnavailableHere'))
+            return
+        }
+        if (containsDroppedDirectory(event.dataTransfer.items)) {
+            setUploadInputError(t('uploadDirectoriesUnsupported'))
+            return
+        }
+        handleUploads(Array.from(event.dataTransfer.files))
     }
     const rename = (): void => {
         if (!selected || selected.kind === 'system') return
@@ -1349,14 +1456,15 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
         <div className="explorer-toolbar">
             <button className="secondary" onClick={() => setCurrentPath(parentPath(currentPath))} disabled={!currentPath}>←</button>
             {canEdit && <button className="secondary" onClick={createFolder} disabled={!currentPath.startsWith('files')}>{t('newFolder')}</button>}
-            {canEdit && <button className="secondary" onClick={() => uploadInput.current?.click()} disabled={!target}>{t('upload')}</button>}
+            {canEdit && <button className="secondary" onClick={() => uploadInput.current?.click()} disabled={!target || action.isPending}>{t('upload')}</button>}
             <input
                 ref={uploadInput}
                 className="hidden-file-input"
                 type="file"
+                multiple
                 onChange={event => {
-                    const file = event.target.files?.[0]
-                    if (file) handleUpload(file)
+                    const files = Array.from(event.target.files ?? [])
+                    if (files.length > 0) handleUploads(files)
                     event.target.value = ''
                 }}
             />
@@ -1400,7 +1508,15 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
         </div>
         <div className="explorer-body">
             <ExplorerTree detail={detail} currentPath={currentPath} onOpen={setCurrentPath} />
-            <div className="explorer-main">
+            <div
+                className={`explorer-main${dragActive ? ' drag-active' : ''}`}
+                onDragEnter={handleDragEnter}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                aria-busy={uploadProgress != null}
+            >
+                {dragActive && <div className="explorer-drop-overlay" role="status">{t('dropFilesHere')}</div>}
                 <div className="explorer-view-options">
                     <span>{entries.length} {t('items')}</span>
                     <label>{t('sortBy')}<select value={sortBy} onChange={event => setSortBy(event.target.value as ExplorerSort)}>
@@ -1449,8 +1565,14 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
                 </div>
             </div>
         </div>
-        {action.isPending && <div className="explorer-progress">{t('working')}</div>}
-        <ErrorNotice error={action.error} />
+        {uploadProgress && <div className="explorer-progress" role="status" aria-live="polite">{t('uploadBatchProgress', {
+            current: uploadProgress.completed + 1,
+            total: uploadProgress.total,
+            fileName: uploadProgress.currentFile
+        })}</div>}
+        {action.isPending && !uploadProgress && <div className="explorer-progress" role="status">{t('working')}</div>}
+        {uploadSuccess != null && <div className="explorer-upload-success" role="status">{t('uploadBatchComplete', { count: uploadSuccess })}</div>}
+        <ErrorNotice error={uploadInputError ?? action.error} />
     </section>
 }
 

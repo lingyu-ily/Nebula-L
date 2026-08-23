@@ -237,7 +237,9 @@ input:disabled { opacity: .6; }
 .tree-icon { width: 14px; color: var(--cyan); }
 .tree-child { color: var(--muted) !important; }
 .tree-warning, .warning-dot { display: inline-grid; place-content: center; width: 16px; height: 16px; margin-left: auto; border-radius: 50%; background: #533d21; color: var(--warning); font: 700 10px 'DM Mono', monospace; }
-.explorer-main { min-width: 0; background: #0d131d; }
+.explorer-main { position: relative; min-width: 0; background: #0d131d; }
+.explorer-main.drag-active { box-shadow: inset 0 0 0 2px var(--cyan); }
+.explorer-drop-overlay { position: absolute; inset: 0; z-index: 4; display: grid; place-content: center; background: #10232ee8; color: var(--cyan); border: 2px dashed #55c8c1; font-size: 16px; font-weight: 700; pointer-events: none; }
 .explorer-view-options { min-height: 45px; display: flex; align-items: center; justify-content: flex-end; gap: 9px; padding: 7px 13px; color: var(--muted); font-size: 11px; border-bottom: 1px solid #1f2a3c; }
 .explorer-view-options > span { margin-right: auto; }
 .explorer-view-options label { display: flex; align-items: center; gap: 7px; }
@@ -254,7 +256,9 @@ input:disabled { opacity: .6; }
 .explorer-entry-icon { display: inline-grid; place-content: center; width: 19px; height: 19px; color: var(--blue); }
 .explorer-entry-icon.directory, .explorer-entry-icon.system { color: var(--warning); }
 .explorer-empty { margin: 24px; }
-.explorer-progress { position: absolute; right: 16px; bottom: 16px; padding: 10px 14px; background: #172a31; color: var(--cyan); border: 1px solid #34645f; box-shadow: 0 10px 30px #0007; font-size: 12px; }
+.explorer-progress, .explorer-upload-success { position: absolute; right: 16px; bottom: 16px; z-index: 5; padding: 10px 14px; box-shadow: 0 10px 30px #0007; font-size: 12px; }
+.explorer-progress { background: #172a31; color: var(--cyan); border: 1px solid #34645f; }
+.explorer-upload-success { background: #142d26; color: #8de2bd; border: 1px solid #38765f; }
 
 @media (max-height: 700px) {
     .login-panel { padding-block: 24px; }
