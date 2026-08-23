@@ -65,6 +65,28 @@ const server = {
 
 async function mockExplorer(page: Page, role: 'EDITOR' | 'AUDITOR' = 'EDITOR'): Promise<unknown[]> {
     const mutations: unknown[] = []
+    const managedServer = {
+        ...server,
+        modules: [...server.modules, {
+            id: 'module-manual',
+            uploadId: null,
+            type: 'ForgeMod',
+            displayName: 'manual.jar',
+            fileName: 'manual.jar',
+            moduleId: null,
+            relativePath: null,
+            optionalMode: 'REQUIRED',
+            sortOrder: 1,
+            needsManualFile: true,
+            manualUrl: 'https://example.com/manual.jar',
+            originalName: null,
+            size: null,
+            md5: null,
+            sha256: null,
+            createdAt: '2026-01-01T00:00:00Z',
+            updatedAt: '2026-01-01T00:00:00Z'
+        }]
+    }
     const directories = [{
         id: 'directory-1',
         path: 'config',
@@ -87,7 +109,16 @@ async function mockExplorer(page: Page, role: 'EDITOR' | 'AUDITOR' = 'EDITOR'): 
                 csrfToken: 'csrf-token'
             })
         } else if (url.pathname === '/api/v1/projects/project-1/servers/server-1' && request.method() === 'GET') {
-            await fulfillJson(route, { project, server, directories })
+            await fulfillJson(route, { project, server: managedServer, directories })
+        } else if (url.pathname.endsWith('/modules/module-1/download') && request.method() === 'GET') {
+            await route.fulfill({
+                status: 200,
+                headers: {
+                    'Content-Type': 'application/octet-stream',
+                    'Content-Disposition': 'attachment; filename="options.txt"'
+                },
+                body: 'payload'
+            })
         } else if (url.pathname.endsWith('/directories') && request.method() === 'POST') {
             const body = request.postDataJSON() as { path: string }
             mutations.push(body)
@@ -204,7 +235,24 @@ test('keeps the Explorer available but read-only for auditors', async ({ page })
     await expect(page.getByRole('button', { name: 'New folder' })).toHaveCount(0)
     await expect(page.getByRole('button', { name: 'Upload' })).toHaveCount(0)
     await page.locator('.explorer-tree').getByRole('button', { name: /Files$/ }).click()
-    await expect(page.locator('.explorer-table').getByRole('row', { name: /config Folder files\/config/ })).toBeVisible()
+    const folderRow = page.locator('.explorer-table').getByRole('row', { name: /config Folder files\/config/ })
+    await expect(folderRow).toBeVisible()
+    await folderRow.click()
+    const downloadButton = page.getByRole('button', { name: 'Download' })
+    await expect(downloadButton).toBeDisabled()
+
+    await page.locator('.explorer-tree').getByRole('button', { name: /config$/ }).click()
+    await page.locator('.explorer-table').getByRole('row', { name: /options\.txt/ }).click()
+    await expect(downloadButton).toBeEnabled()
+    const [download] = await Promise.all([
+        page.waitForEvent('download'),
+        downloadButton.click()
+    ])
+    expect(download.suggestedFilename()).toBe('options.txt')
+
+    await page.locator('.explorer-tree').getByRole('button', { name: /Required$/ }).click()
+    await page.locator('.explorer-table').getByRole('row', { name: /manual\.jar/ }).click()
+    await expect(downloadButton).toBeDisabled()
 })
 
 test('uploads multiple selected files sequentially with the returned revisions', async ({ page }) => {

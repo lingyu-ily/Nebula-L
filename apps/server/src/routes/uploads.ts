@@ -22,6 +22,12 @@ interface UploadRow extends RowDataPacket {
     created_at: Date
 }
 
+interface ModuleDownloadRow extends UploadRow {
+    module_file_name: string | null
+    relative_path: string | null
+    display_name: string
+}
+
 function parseByteRange(header: string | undefined, size: number): { start: number, end: number } | null | false {
     if (!header) {
         return null
@@ -47,6 +53,27 @@ function parseByteRange(header: string | undefined, size: number): { start: numb
         return false
     }
     return { start, end: Math.min(end, size - 1) }
+}
+
+function downloadFileName(row: ModuleDownloadRow): string {
+    const candidate = row.module_file_name
+        ?? row.relative_path?.split('/').at(-1)
+        ?? row.original_name
+        ?? row.display_name
+    return candidate.split(/[/\\]/).at(-1) || 'download'
+}
+
+function attachmentDisposition(fileName: string): string {
+    const fallback = Array.from(fileName, character => {
+        const codePoint = character.codePointAt(0) ?? 0
+        return codePoint >= 0x20 && codePoint <= 0x7e && character !== '"' && character !== '\\'
+            ? character
+            : '_'
+    }).join('') || 'download'
+    const encoded = encodeURIComponent(fileName).replace(/[!'()*]/g, character =>
+        `%${character.charCodeAt(0).toString(16).toUpperCase()}`
+    )
+    return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`
 }
 
 export async function registerUploadRoutes(app: FastifyInstance): Promise<void> {
@@ -97,6 +124,52 @@ export async function registerUploadRoutes(app: FastifyInstance): Promise<void> 
         const rangeHeader = range ? `bytes=${range.start}-${range.end}` : undefined
         const stored = await getStoredObject(upload.object_key, rangeHeader)
         reply.type(upload.mime_type)
+        reply.header('Cache-Control', 'private, no-store')
+        reply.header('X-Content-Type-Options', 'nosniff')
+        reply.header('Accept-Ranges', 'bytes')
+        if (range) {
+            reply.code(206)
+            reply.header('Content-Range', stored.contentRange ?? `bytes ${range.start}-${range.end}/${size}`)
+            reply.header('Content-Length', stored.contentLength ?? range.end - range.start + 1)
+        } else {
+            reply.header('Content-Length', stored.contentLength ?? size)
+        }
+        return reply.send(stored.body)
+    })
+
+    app.get('/api/v1/projects/:projectId/servers/:serverId/modules/:moduleRecordId/download', {
+        preHandler: requireRole('ADMIN', 'EDITOR', 'AUDITOR')
+    }, async (request, reply) => {
+        const { projectId, serverId, moduleRecordId } = request.params as {
+            projectId: string
+            serverId: string
+            moduleRecordId: string
+        }
+        const [rows] = await getPool().execute<ModuleDownloadRow[]>(
+            `SELECT u.*, m.file_name AS module_file_name, m.relative_path, m.display_name
+             FROM modules m
+             INNER JOIN servers s ON s.id = m.server_id AND s.project_id = m.project_id
+             INNER JOIN projects p ON p.id = m.project_id AND p.disabled = FALSE
+             INNER JOIN uploads u ON u.id = m.upload_id AND u.project_id = m.project_id
+             WHERE m.id = ? AND m.server_id = ? AND m.project_id = ? AND u.status = 'READY'`,
+            [moduleRecordId, serverId, projectId]
+        )
+        const upload = rows[0]
+        if (!upload) {
+            throw new HttpError(404, 'Module file not found')
+        }
+        const size = Number(upload.size)
+        const range = parseByteRange(request.headers.range, size)
+        if (range === false) {
+            reply.code(416)
+            reply.header('Content-Range', `bytes */${size}`)
+            reply.header('Accept-Ranges', 'bytes')
+            return reply.send()
+        }
+        const rangeHeader = range ? `bytes=${range.start}-${range.end}` : undefined
+        const stored = await getStoredObject(upload.object_key, rangeHeader)
+        reply.type('application/octet-stream')
+        reply.header('Content-Disposition', attachmentDisposition(downloadFileName(upload)))
         reply.header('Cache-Control', 'private, no-store')
         reply.header('X-Content-Type-Options', 'nosniff')
         reply.header('Accept-Ranges', 'bytes')

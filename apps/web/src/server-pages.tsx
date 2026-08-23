@@ -1448,6 +1448,14 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
             })
         })
     }
+    const download = (): void => {
+        if (selected?.kind !== 'module' || !selected.module.uploadId || selected.module.needsManualFile) return
+        const link = document.createElement('a')
+        link.href = `${moduleUrl(selected.id)}/download`
+        document.body.append(link)
+        link.click()
+        link.remove()
+    }
     const open = (entry: ExplorerEntry): void => {
         if (entry.kind !== 'module') setCurrentPath(entry.path)
     }
@@ -1482,6 +1490,11 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
                     event.target.value = ''
                 }}
             />
+            <button
+                className="text-button toolbar-action"
+                onClick={download}
+                disabled={selected?.kind !== 'module' || !selected.module.uploadId || selected.module.needsManualFile}
+            >{t('download')}</button>
             {canEdit && <button className="danger-link toolbar-action" onClick={remove} disabled={!selected || selected.kind === 'system'}>{t('delete')}</button>}
             <button className="text-button toolbar-action" onClick={() => invalidateServer(queryClient, detail.project.id, detail.server.id)}>{t('refresh')}</button>
         </div>
