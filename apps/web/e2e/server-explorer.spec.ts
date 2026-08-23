@@ -52,6 +52,7 @@ const server = {
         relativePath: 'config/options.txt',
         optionalMode: 'REQUIRED',
         sortOrder: 0,
+        validateChecksum: true,
         needsManualFile: false,
         manualUrl: null,
         originalName: 'options.txt',
@@ -63,11 +64,16 @@ const server = {
     }]
 }
 
-async function mockExplorer(page: Page, role: 'EDITOR' | 'AUDITOR' = 'EDITOR'): Promise<unknown[]> {
+async function mockExplorer(
+    page: Page,
+    role: 'EDITOR' | 'AUDITOR' = 'EDITOR',
+    options: { failChecksumUpdate?: boolean } = {}
+): Promise<unknown[]> {
     const mutations: unknown[] = []
+    const managedProject = { ...project }
     const managedServer = {
         ...server,
-        modules: [...server.modules, {
+        modules: [...server.modules.map(module => ({ ...module })), {
             id: 'module-manual',
             uploadId: null,
             type: 'ForgeMod',
@@ -77,6 +83,7 @@ async function mockExplorer(page: Page, role: 'EDITOR' | 'AUDITOR' = 'EDITOR'): 
             relativePath: null,
             optionalMode: 'REQUIRED',
             sortOrder: 1,
+            validateChecksum: true,
             needsManualFile: true,
             manualUrl: 'https://example.com/manual.jar',
             originalName: null,
@@ -109,7 +116,24 @@ async function mockExplorer(page: Page, role: 'EDITOR' | 'AUDITOR' = 'EDITOR'): 
                 csrfToken: 'csrf-token'
             })
         } else if (url.pathname === '/api/v1/projects/project-1/servers/server-1' && request.method() === 'GET') {
-            await fulfillJson(route, { project, server: managedServer, directories })
+            await fulfillJson(route, { project: managedProject, server: managedServer, directories })
+        } else if (url.pathname.endsWith('/modules/module-1') && request.method() === 'PATCH') {
+            const body = request.postDataJSON() as { revision: number, validateChecksum?: boolean }
+            mutations.push(body)
+            if (options.failChecksumUpdate) {
+                await fulfillJson(route, {
+                    title: 'Revision conflict',
+                    detail: 'Draft revision changed',
+                    status: 409
+                }, 409)
+                return
+            }
+            const module = managedServer.modules.find(value => value.id === 'module-1')
+            if (module && typeof body.validateChecksum === 'boolean') {
+                module.validateChecksum = body.validateChecksum
+            }
+            managedProject.draftRevision = body.revision + 1
+            await fulfillJson(route, { updated: true, draftRevision: managedProject.draftRevision })
         } else if (url.pathname.endsWith('/modules/module-1/download') && request.method() === 'GET') {
             await route.fulfill({
                 status: 200,
@@ -243,6 +267,9 @@ test('keeps the Explorer available but read-only for auditors', async ({ page })
 
     await page.locator('.explorer-tree').getByRole('button', { name: /config$/ }).click()
     await page.locator('.explorer-table').getByRole('row', { name: /options\.txt/ }).click()
+    const validationSwitch = page.getByRole('switch', { name: 'Validate options.txt' })
+    await expect(validationSwitch).toBeChecked()
+    await expect(validationSwitch).toBeDisabled()
     await expect(downloadButton).toBeEnabled()
     const [download] = await Promise.all([
         page.waitForEvent('download'),
@@ -252,7 +279,36 @@ test('keeps the Explorer available but read-only for auditors', async ({ page })
 
     await page.locator('.explorer-tree').getByRole('button', { name: /Required$/ }).click()
     await page.locator('.explorer-table').getByRole('row', { name: /manual\.jar/ }).click()
+    await expect(page.getByText('Always on')).toBeVisible()
     await expect(downloadButton).toBeDisabled()
+})
+
+test('updates checksum validation for a File module', async ({ page }) => {
+    const mutations = await mockExplorer(page)
+    await page.goto('/projects/project-1/servers/server-1/files')
+    await page.locator('.explorer-tree').getByRole('button', { name: /config$/ }).click()
+
+    const validationSwitch = page.getByRole('switch', { name: 'Validate options.txt' })
+    await expect(validationSwitch).toBeChecked()
+    await validationSwitch.click()
+
+    await expect.poll(() => mutations).toContainEqual(expect.objectContaining({
+        revision: 3,
+        validateChecksum: false
+    }))
+    await expect(validationSwitch).not.toBeChecked()
+})
+
+test('keeps checksum validation unchanged when the revision conflicts', async ({ page }) => {
+    await mockExplorer(page, 'EDITOR', { failChecksumUpdate: true })
+    await page.goto('/projects/project-1/servers/server-1/files')
+    await page.locator('.explorer-tree').getByRole('button', { name: /config$/ }).click()
+
+    const validationSwitch = page.getByRole('switch', { name: 'Validate options.txt' })
+    await validationSwitch.click()
+
+    await expect(page.getByRole('alert')).toContainText('Draft revision changed')
+    await expect(validationSwitch).toBeChecked()
 })
 
 test('uploads multiple selected files sequentially with the returned revisions', async ({ page }) => {

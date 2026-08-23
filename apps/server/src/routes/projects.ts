@@ -98,6 +98,7 @@ interface ModuleRow extends RowDataPacket {
     relative_path: string | null
     optional_mode: 'REQUIRED' | 'OPTIONAL_ON' | 'OPTIONAL_OFF'
     sort_order: number
+    validate_checksum: number
     needs_manual_file: number
     manual_url: string | null
     original_name?: string
@@ -177,6 +178,7 @@ function mapModule(row: ModuleRow): Record<string, unknown> {
         relativePath: row.relative_path,
         optionalMode: row.optional_mode,
         sortOrder: row.sort_order,
+        validateChecksum: Boolean(row.validate_checksum),
         needsManualFile: Boolean(row.needs_manual_file),
         manualUrl: row.manual_url,
         originalName: row.original_name,
@@ -916,12 +918,12 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
             await connection.execute(
                 `INSERT INTO modules (
                     id, project_id, server_id, upload_id, type, display_name, file_name, module_id, relative_path,
-                    optional_mode, sort_order, needs_manual_file, created_at, updated_at
-                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))`,
+                    optional_mode, sort_order, validate_checksum, needs_manual_file, created_at, updated_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))`,
                 [
                     id, projectId, serverId, parsed.data.uploadId, parsed.data.type, parsed.data.displayName,
                     fileName, parsed.data.moduleId ?? null, relativePath,
-                    parsed.data.optionalMode, parsed.data.sortOrder
+                    parsed.data.optionalMode, parsed.data.sortOrder, parsed.data.validateChecksum
                 ]
             )
             await bumpProject(connection, projectId)
@@ -985,11 +987,11 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
             )
             await connection.execute(
                 `UPDATE modules SET upload_id = ?, type = ?, display_name = ?, file_name = ?, module_id = ?, relative_path = ?,
-                 optional_mode = ?, sort_order = ?, needs_manual_file = FALSE, manual_url = NULL,
+                 optional_mode = ?, sort_order = ?, validate_checksum = ?, needs_manual_file = FALSE, manual_url = NULL,
                  updated_at = UTC_TIMESTAMP(3) WHERE id = ?`,
                 [
                     parsed.data.uploadId, parsed.data.type, parsed.data.displayName, fileName, parsed.data.moduleId ?? null,
-                    relativePath, parsed.data.optionalMode, parsed.data.sortOrder, moduleId
+                    relativePath, parsed.data.optionalMode, parsed.data.sortOrder, parsed.data.validateChecksum, moduleId
                 ]
             )
             await bumpProject(connection, projectId)

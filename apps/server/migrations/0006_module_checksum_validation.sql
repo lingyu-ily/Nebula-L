@@ -1,0 +1,2 @@
+ALTER TABLE modules
+    ADD COLUMN IF NOT EXISTS validate_checksum BOOLEAN NOT NULL DEFAULT TRUE AFTER sort_order;

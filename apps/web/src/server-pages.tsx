@@ -1413,6 +1413,13 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
             ...jsonBody({ revision: detail.project.draftRevision, displayName, optionalMode })
         }))
     }
+    const setChecksumValidation = (module: ManagedModule, validateChecksum: boolean): void => {
+        if (!canEdit || module.type !== 'File' || action.isPending) return
+        action.mutate(() => api(moduleUrl(module.id), {
+            method: 'PATCH',
+            ...jsonBody({ revision: detail.project.draftRevision, validateChecksum })
+        }))
+    }
     const remove = (): void => {
         if (!selected || selected.kind === 'system') return
         if (selected.kind === 'directory') {
@@ -1542,7 +1549,7 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
                 </div>
                 <div className="explorer-table-wrap">
                     <table className="explorer-table">
-                        <thead><tr><th>{t('name')}</th><th>{t('type')}</th><th>{t('destination')}</th><th>{t('size')}</th><th>{t('status')}</th><th>{t('updated')}</th></tr></thead>
+                        <thead><tr><th>{t('name')}</th><th>{t('type')}</th><th>{t('destination')}</th><th>{t('size')}</th><th>{t('status')}</th><th>{t('checksumValidation')}</th><th>{t('updated')}</th></tr></thead>
                         <tbody>
                             {entries.map(entry => {
                                 const key = `${entry.kind}:${entry.id}`
@@ -1569,6 +1576,24 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
                                     <td><code>{entry.path}</code></td>
                                     <td>{module ? displayFileSize(module.size, t('bytes')) : '—'}</td>
                                     <td className={module?.needsManualFile ? 'warning' : ''}>{status}</td>
+                                    <td title={module?.type === 'File' ? t('checksumValidationHint') : undefined}>
+                                        {module?.type === 'File'
+                                            ? <button
+                                                type="button"
+                                                role="switch"
+                                                aria-checked={module.validateChecksum}
+                                                aria-label={t('checksumValidationFor', { name: entry.name })}
+                                                className={`checksum-switch${module.validateChecksum ? ' enabled' : ''}`}
+                                                disabled={!canEdit || action.isPending}
+                                                onClick={event => {
+                                                    event.stopPropagation()
+                                                    setChecksumValidation(module, !module.validateChecksum)
+                                                }}
+                                            ><span /></button>
+                                            : module
+                                                ? <span className="checksum-always-on">{t('checksumValidationAlwaysOn')}</span>
+                                                : '—'}
+                                    </td>
                                     <td>{updated ? new Date(updated).toLocaleString() : '—'}</td>
                                 </tr>
                             })}

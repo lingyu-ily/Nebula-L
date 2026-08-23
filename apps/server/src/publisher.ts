@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto'
 import { copyFile, mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { basename, dirname, extname, join, relative, sep } from 'path'
-import type { Distribution, Module } from 'helios-distribution-types'
+import { Type, type Distribution, type Module } from 'helios-distribution-types'
 import type { PoolConnection, RowDataPacket } from 'mysql2/promise'
 import {
     CurseForgeParser,
@@ -51,6 +51,7 @@ interface SnapshotModule {
     relativePath: string | null
     optionalMode: 'REQUIRED' | 'OPTIONAL_ON' | 'OPTIONAL_OFF'
     sortOrder: number
+    validateChecksum: boolean
     needsManualFile: boolean
     upload: SnapshotUpload | null
 }
@@ -189,6 +190,7 @@ interface ModuleSnapshotRow extends RowDataPacket {
     relative_path: string | null
     optional_mode: SnapshotModule['optionalMode']
     sort_order: number
+    validate_checksum: number
     needs_manual_file: number
     object_key: string | null
     original_name: string | null
@@ -389,6 +391,7 @@ export async function buildProjectSnapshot(connection: PoolConnection, projectId
                 relativePath: module.relative_path,
                 optionalMode: module.optional_mode,
                 sortOrder: module.sort_order,
+                validateChecksum: Boolean(module.validate_checksum),
                 needsManualFile: Boolean(module.needs_manual_file),
                 upload: module.upload_id && module.object_key ? {
                     id: module.upload_id,
@@ -717,6 +720,33 @@ export function orderDistribution(distribution: Distribution, snapshot: ProjectS
     }
 }
 
+function normalizedArtifactPath(path: string): string {
+    return path.replace(/\\/g, '/').replace(/^\.\//, '')
+}
+
+export function applyChecksumValidation(distribution: Distribution, snapshot: ProjectSnapshot): void {
+    const sourceById = new Map(snapshot.servers.map(server => [
+        ServerStructure.getEffectiveId(server.serverKey, new MinecraftVersion(server.minecraftVersion)),
+        server
+    ]))
+    for (const server of distribution.servers) {
+        const source = sourceById.get(server.id)
+        if (!source) {
+            throw new PermanentJobError(`Generated distribution server ID is missing from snapshot: ${server.id}`)
+        }
+        const unvalidatedPaths = new Set(source.modules
+            .filter(module => module.type === 'File' && module.validateChecksum === false && module.relativePath != null)
+            .map(module => normalizedArtifactPath(module.relativePath!)))
+        for (const module of server.modules) {
+            if (module.type === Type.File
+                && module.artifact.path
+                && unvalidatedPaths.has(normalizedArtifactPath(module.artifact.path))) {
+                delete module.artifact.MD5
+            }
+        }
+    }
+}
+
 async function listFiles(root: string): Promise<string[]> {
     const result: string[] = []
     async function walk(directory: string): Promise<void> {
@@ -855,6 +885,7 @@ export async function publishJob(job: JobRow): Promise<void> {
         process.env.JAVA_EXECUTABLE = getConfig().javaExecutable
         const distribution = await new DistributionStructure(workspace, releasePublicBase, false, false).getSpecModel()
         orderDistribution(distribution, snapshot)
+        applyChecksumValidation(distribution, snapshot)
         const distributionPath = join(workspace, 'distribution.json')
         await writeFile(distributionPath, JSON.stringify(distribution, null, 2))
         await heartbeat(job.id, 60)

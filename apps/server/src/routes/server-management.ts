@@ -94,6 +94,7 @@ interface ModuleRow extends RowDataPacket {
     relative_path: string | null
     optional_mode: OptionalMode
     sort_order: number
+    validate_checksum: number
     needs_manual_file: number
     manual_url: string | null
     original_name: string | null
@@ -172,6 +173,7 @@ function mapModule(row: ModuleRow): Record<string, unknown> {
         relativePath: row.relative_path,
         optionalMode: row.optional_mode,
         sortOrder: row.sort_order,
+        validateChecksum: Boolean(row.validate_checksum),
         needsManualFile: Boolean(row.needs_manual_file),
         manualUrl: row.manual_url,
         originalName: row.original_name,
@@ -576,6 +578,9 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
             if (!before) {
                 throw new HttpError(404, 'Module not found')
             }
+            if (before.type !== 'File' && parsed.data.validateChecksum === false) {
+                throw new HttpError(400, 'Only File modules may disable checksum validation')
+            }
             let relativePath = before.relative_path
             let fileName = before.file_name ?? before.original_name ?? before.display_name
             const optionalMode = parsed.data.optionalMode ?? before.optional_mode
@@ -608,7 +613,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
             }
             await connection.execute(
                 `UPDATE modules SET display_name = ?, file_name = ?, module_id = ?, relative_path = ?,
-                 optional_mode = ?, sort_order = ?, updated_at = UTC_TIMESTAMP(3) WHERE id = ?`,
+                 optional_mode = ?, sort_order = ?, validate_checksum = ?, updated_at = UTC_TIMESTAMP(3) WHERE id = ?`,
                 [
                     parsed.data.displayName ?? before.display_name,
                     fileName,
@@ -616,6 +621,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
                     relativePath,
                     optionalMode,
                     parsed.data.sortOrder ?? before.sort_order,
+                    parsed.data.validateChecksum ?? Boolean(before.validate_checksum),
                     moduleRecordId
                 ]
             )

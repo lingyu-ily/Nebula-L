@@ -52,6 +52,7 @@ export interface ManagedModule {
     relativePath: string | null
     optionalMode: 'REQUIRED' | 'OPTIONAL_ON' | 'OPTIONAL_OFF'
     sortOrder: number
+    validateChecksum: boolean
     needsManualFile: boolean
     manualUrl: string | null
     originalName: string | null

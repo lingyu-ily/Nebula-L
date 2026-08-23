@@ -182,7 +182,8 @@ export const moduleInputSchema = z.object({
     moduleId: z.string().trim().max(512).nullable().optional(),
     relativePath: z.string().trim().max(1024).nullable().optional(),
     optionalMode: optionalModeSchema.default('REQUIRED'),
-    sortOrder: z.number().int().min(0).default(0)
+    sortOrder: z.number().int().min(0).default(0),
+    validateChecksum: z.boolean().default(true)
 }).superRefine((value, context) => {
     if (value.type === 'File' && (!value.relativePath || !isSafeRelativePath(value.relativePath))) {
         context.addIssue({
@@ -196,6 +197,13 @@ export const moduleInputSchema = z.object({
             code: 'custom',
             path: ['optionalMode'],
             message: 'Only mod modules may be optional'
+        })
+    }
+    if (value.type !== 'File' && !value.validateChecksum) {
+        context.addIssue({
+            code: 'custom',
+            path: ['validateChecksum'],
+            message: 'Only File modules may disable checksum validation'
         })
     }
 })
@@ -214,7 +222,8 @@ export const modulePatchSchema = z.object({
     moduleId: z.string().trim().max(512).nullable().optional(),
     relativePath: managedPathSchema.optional(),
     optionalMode: optionalModeSchema.optional(),
-    sortOrder: z.number().int().min(0).optional()
+    sortOrder: z.number().int().min(0).optional(),
+    validateChecksum: z.boolean().optional()
 }).refine(value => Object.keys(value).length > 0, 'No changes supplied')
 
 export const moduleReplaceSchema = z.object({

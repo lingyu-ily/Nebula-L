@@ -4,6 +4,7 @@ import {
     isSafeFileName,
     isSafeRelativePath,
     launcherUiInputSchema,
+    moduleInputSchema,
     modulePatchSchema,
     serverOrderInputSchema,
     serverInputSchema
@@ -25,6 +26,23 @@ describe('shared validation', () => {
         expect(isSafeFileName('../mod.jar')).toBe(false)
         expect(modulePatchSchema.safeParse({}).success).toBe(false)
         expect(modulePatchSchema.safeParse({ fileName: 'renamed.jar' }).success).toBe(true)
+    })
+
+    it('allows only File modules to disable checksum validation', () => {
+        const base = {
+            uploadId: '9fb8ad8a-4d47-4dd8-85f7-07059f4ef4c8',
+            displayName: 'options.txt',
+            relativePath: 'config/options.txt'
+        }
+        expect(moduleInputSchema.parse({ ...base, type: 'File' }).validateChecksum).toBe(true)
+        expect(moduleInputSchema.safeParse({ ...base, type: 'File', validateChecksum: false }).success).toBe(true)
+        expect(moduleInputSchema.safeParse({
+            ...base,
+            type: 'ForgeMod',
+            relativePath: null,
+            validateChecksum: false
+        }).success).toBe(false)
+        expect(modulePatchSchema.safeParse({ validateChecksum: false }).success).toBe(true)
     })
 
     it('rejects mixed Forge and Fabric loaders', () => {

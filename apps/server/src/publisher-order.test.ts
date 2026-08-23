@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Distribution } from 'helios-distribution-types'
 import { PermanentJobError } from './job-errors.js'
-import { orderDistribution, type ProjectSnapshot } from './publisher.js'
+import { applyChecksumValidation, orderDistribution, type ProjectSnapshot } from './publisher.js'
 
 describe('published server ordering', () => {
     it('keeps the saved snapshot order without forcing the main server first', () => {
@@ -96,5 +96,54 @@ describe('published server ordering', () => {
         expect(() => orderDistribution(distribution, snapshot)).toThrow(
             'duplicate snapshot IDs: first-1.20.1; duplicate generated IDs: first-1.20.1'
         )
+    })
+})
+
+describe('published checksum validation', () => {
+    it('omits MD5 only for File modules with validation disabled', () => {
+        const distribution = {
+            servers: [{
+                id: 'main-1.20.1',
+                modules: [
+                    { type: 'File', artifact: { path: 'config/options.txt', MD5: 'options-md5' } },
+                    { type: 'File', artifact: { path: 'config/servers.dat', MD5: 'servers-md5' } },
+                    { type: 'File', artifact: { path: 'config/legacy.txt', MD5: 'legacy-md5' } },
+                    { type: 'ForgeMod', artifact: { path: 'config/options.txt', MD5: 'mod-md5' } }
+                ]
+            }]
+        } as unknown as Distribution
+        const snapshot = {
+            servers: [{
+                serverKey: 'main',
+                minecraftVersion: '1.20.1',
+                modules: [
+                    {
+                        type: 'File',
+                        relativePath: 'config/options.txt',
+                        validateChecksum: false,
+                        upload: { md5: 'stored-options-md5' }
+                    },
+                    {
+                        type: 'File',
+                        relativePath: 'config/servers.dat',
+                        validateChecksum: true,
+                        upload: { md5: 'stored-servers-md5' }
+                    },
+                    {
+                        type: 'File',
+                        relativePath: 'config/legacy.txt',
+                        upload: { md5: 'stored-legacy-md5' }
+                    }
+                ]
+            }]
+        } as unknown as ProjectSnapshot
+
+        applyChecksumValidation(distribution, snapshot)
+
+        expect(distribution.servers[0].modules[0].artifact.MD5).toBeUndefined()
+        expect(distribution.servers[0].modules[1].artifact.MD5).toBe('servers-md5')
+        expect(distribution.servers[0].modules[2].artifact.MD5).toBe('legacy-md5')
+        expect(distribution.servers[0].modules[3].artifact.MD5).toBe('mod-md5')
+        expect(snapshot.servers[0].modules[0].upload?.md5).toBe('stored-options-md5')
     })
 })

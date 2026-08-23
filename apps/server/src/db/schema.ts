@@ -134,6 +134,7 @@ export const modules = mysqlTable('modules', {
     relativePath: varchar('relative_path', { length: 1024 }),
     optionalMode: mysqlEnum('optional_mode', ['REQUIRED', 'OPTIONAL_ON', 'OPTIONAL_OFF']).notNull(),
     sortOrder: int('sort_order').notNull().default(0),
+    validateChecksum: boolean('validate_checksum').notNull().default(true),
     needsManualFile: boolean('needs_manual_file').notNull().default(false),
     manualUrl: varchar('manual_url', { length: 2048 }),
     ...timestamps
