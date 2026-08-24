@@ -9,7 +9,8 @@ const project = {
     description: '',
     rss: '',
     discord: null,
-    draftRevision: 7,
+    draftVersion: 7,
+    releaseRevision: null,
     activeReleaseId: null,
     disabled: false
 }
@@ -82,14 +83,14 @@ function acceptDisableDialogs(page: Page, name = project.name): void {
     })
 }
 
-test('allows an administrator to disable a distribution with the current revision', async ({ page }) => {
+test('allows an administrator to disable a distribution with the current draft version', async ({ page }) => {
     const { deleteBodies } = await mockProjectPage(page, 'ADMIN')
     acceptDisableDialogs(page)
     await page.goto('/projects/project-1')
 
     await page.getByRole('button', { name: 'Disable distribution' }).click()
 
-    await expect.poll(() => deleteBodies).toEqual([{ revision: 7 }])
+    await expect.poll(() => deleteBodies).toEqual([{ draftVersion: 7 }])
     await expect(page).toHaveURL(/\/projects$/)
     await expect(page.getByText('No distributions yet.')).toBeVisible()
 })
@@ -125,7 +126,7 @@ for (const role of ['EDITOR', 'AUDITOR'] as const) {
     })
 }
 
-test('shows revision conflicts and allows the administrator to retry', async ({ page }) => {
+test('shows draft version conflicts and allows the administrator to retry', async ({ page }) => {
     const { deleteBodies } = await mockProjectPage(page, 'ADMIN', [409, 200])
     acceptDisableDialogs(page)
     await page.goto('/projects/project-1')
@@ -137,6 +138,6 @@ test('shows revision conflicts and allows the administrator to retry', async ({ 
     await expect(disableButton).toBeEnabled()
 
     await disableButton.click()
-    await expect.poll(() => deleteBodies).toEqual([{ revision: 7 }, { revision: 7 }])
+    await expect.poll(() => deleteBodies).toEqual([{ draftVersion: 7 }, { draftVersion: 7 }])
     await expect(page).toHaveURL(/\/projects$/)
 })

@@ -6,7 +6,14 @@ async function fulfillJson(route: Route, value: unknown): Promise<void> {
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) })
 }
 
-async function mockDistribution(page: Page, ready: boolean, jobs: unknown[] = []): Promise<void> {
+async function mockDistribution(
+    page: Page,
+    ready: boolean,
+    jobs: unknown[] = [],
+    successfulRevision?: number
+): Promise<{ projectRequests: () => number }> {
+    let projectRequestCount = 0
+    let successfulJobSeen = false
     await page.addInitScript(() => {
         localStorage.setItem('i18nextLng', 'en')
         Object.defineProperty(navigator, 'clipboard', {
@@ -27,14 +34,19 @@ async function mockDistribution(page: Page, ready: boolean, jobs: unknown[] = []
                 csrfToken: 'csrf-token'
             })
         } else if (path === '/api/v1/projects/project-1') {
+            projectRequestCount += 1
             await fulfillJson(route, {
                 project: {
                     id: 'project-1', slug: 'maplecraftlauncher', name: 'MapleCraft', description: '', rss: '', discord: null,
-                    draftRevision: 3, activeReleaseId: 'release-1', launcherUrl, stableDistributionReady: ready, disabled: false
+                    draftVersion: 3,
+                    releaseRevision: successfulJobSeen && successfulRevision != null ? successfulRevision : 3,
+                    activeReleaseId: 'release-1', launcherUrl, stableDistributionReady: ready, disabled: false
                 },
                 servers: []
             })
         } else if (path.endsWith('/jobs')) {
+            successfulJobSeen = jobs.some(job => (job as { kind?: string, status?: string }).kind === 'PUBLISH'
+                && (job as { status?: string }).status === 'SUCCEEDED')
             await fulfillJson(route, { items: jobs })
         } else if (path.endsWith('/releases')) {
             await fulfillJson(route, { items: [] })
@@ -42,6 +54,7 @@ async function mockDistribution(page: Page, ready: boolean, jobs: unknown[] = []
             await route.fulfill({ status: 404, contentType: 'application/problem+json', body: '{"title":"Not Found"}' })
         }
     })
+    return { projectRequests: () => projectRequestCount }
 }
 
 test('shows and copies the stable launcher distribution URL', async ({ page }) => {
@@ -71,4 +84,15 @@ test('keeps the last progress on a failed publish job', async ({ page }) => {
     await page.goto('/projects/project-1')
 
     await expect(page.getByText('FAILED · 10%')).toBeVisible()
+})
+
+test('refreshes the displayed revision after a publish job succeeds', async ({ page }) => {
+    const state = await mockDistribution(page, true, [{
+        id: 'job-success', kind: 'PUBLISH', status: 'SUCCEEDED', attempts: 1, maxAttempts: 3,
+        progress: 100, result: null, error: null, createdAt: '2026-08-24T00:00:00Z'
+    }], 4)
+    await page.goto('/projects/project-1')
+
+    await expect(page.locator('header.project-header')).toContainText('Revision 4')
+    await expect.poll(state.projectRequests).toBeGreaterThan(1)
 })

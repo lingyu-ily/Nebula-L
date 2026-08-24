@@ -21,7 +21,7 @@ async function mockLauncherPage(page: Page, missingImages = false): Promise<unkn
             })
         } else if (url.pathname === '/api/v1/projects/project-1/servers/server-1' && request.method() === 'GET') {
             await fulfillJson(route, {
-                project: { id: 'project-1', name: 'Test', rss: 'https://example.com/global/rss', draftRevision: 4 },
+                project: { id: 'project-1', name: 'Test', rss: 'https://example.com/global/rss', draftVersion: 4, releaseRevision: null },
                 server: {
                     id: 'server-1', serverKey: 'adventure', name: 'Adventure World', description: 'Default description',
                     minecraftVersion: '1.20.1', serverVersion: '1.0.0', address: 'localhost:25565', discord: null,
@@ -41,9 +41,9 @@ async function mockLauncherPage(page: Page, missingImages = false): Promise<unkn
             await fulfillJson(route, { title: 'The specified key does not exist.' }, 500)
         } else if (url.pathname.endsWith('/launcher-ui') && request.method() === 'PATCH') {
             saves.push(request.postDataJSON())
-            await fulfillJson(route, { updated: true, draftRevision: 5 })
+            await fulfillJson(route, { updated: true, draftVersion: 5 })
         } else if (url.pathname === '/api/v1/projects/project-1' && request.method() === 'GET') {
-            await fulfillJson(route, { project: { id: 'project-1', name: 'Test', draftRevision: 5 }, servers: [] })
+            await fulfillJson(route, { project: { id: 'project-1', name: 'Test', draftVersion: 5, releaseRevision: null }, servers: [] })
         } else {
             await fulfillJson(route, { title: 'Not Found', status: 404 }, 404)
         }
@@ -67,7 +67,7 @@ test('edits and previews per-server launcher copy', async ({ page }) => {
 
     await expect.poll(() => saves.length).toBe(1)
     expect(saves[0]).toMatchObject({
-        revision: 4,
+        draftVersion: 4,
         backgroundUploadId: null,
         logoUploadId: null,
         eyebrow: 'MAPLECRAFT SERVER',

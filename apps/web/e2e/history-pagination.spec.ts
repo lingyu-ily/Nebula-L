@@ -47,7 +47,7 @@ async function mockHistory(page: Page): Promise<{
     }))
     let releases = Array.from({ length: 6 }, (_, index) => ({
         id: `release-${index + 1}`,
-        draftRevision: 20 - index,
+        releaseRevision: 20 - index,
         status: index === 0 ? 'ACTIVE' : 'AVAILABLE',
         retained: true,
         createdBy: 'admin',
@@ -69,7 +69,9 @@ async function mockHistory(page: Page): Promise<{
             await fulfillJson(route, {
                 project: {
                     id: 'project-1', slug: 'history', name: 'History', description: '', rss: '', discord: null,
-                    draftRevision: 20, activeReleaseId, launcherUrl: 'https://cdn.example.com/history/distribution.json',
+                    draftVersion: 20,
+                    releaseRevision: releases.find(release => release.id === activeReleaseId)?.releaseRevision ?? null,
+                    activeReleaseId, launcherUrl: 'https://cdn.example.com/history/distribution.json',
                     stableDistributionReady: true, disabled: false
                 },
                 servers: []
@@ -145,5 +147,6 @@ test('paginates jobs and releases independently in groups of five', async ({ pag
     await expect(releasePages.getByText('Page 1')).toBeVisible()
     await expect(releaseCard.getByText('r15')).toBeVisible()
     await expect(releaseCard.getByText('ACTIVE')).toBeVisible()
+    await expect(page.locator('header.project-header')).toContainText('Revision 15')
     await expect(jobPages.getByText('Page 2')).toBeVisible()
 })

@@ -12,7 +12,8 @@ export interface Project {
     description: string
     rss: string
     discord: null | { clientId: string, smallImageText: string, smallImageKey: string }
-    draftRevision: number
+    draftVersion: number
+    releaseRevision: number | null
     activeReleaseId: string | null
     launcherUrl: string
     stableDistributionReady?: boolean
@@ -139,7 +140,7 @@ export interface Job {
 
 export interface Release {
     id: string
-    draftRevision: number
+    releaseRevision: number
     status: 'ACTIVE' | 'AVAILABLE' | 'DELETED'
     retained: boolean
     createdBy: string

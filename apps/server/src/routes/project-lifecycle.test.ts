@@ -104,14 +104,14 @@ describe('disabled distribution lifecycle routes', () => {
         expect((await editor.inject('/api/v1/projects/disabled')).statusCode).toBe(403)
     })
 
-    it('restores a disabled distribution with revision and CSRF protection', async () => {
+    it('restores a disabled distribution with draft version and CSRF protection', async () => {
         const app = await createApp('ADMIN')
         const missingCsrf = await app.inject({
-            method: 'POST', url: '/api/v1/projects/project-1/restore', payload: { revision: 7 }
+            method: 'POST', url: '/api/v1/projects/project-1/restore', payload: { draftVersion: 7 }
         })
         expect(missingCsrf.statusCode).toBe(403)
 
-        const response = await app.inject(mutation('POST', '/api/v1/projects/project-1/restore', { revision: 7 }))
+        const response = await app.inject(mutation('POST', '/api/v1/projects/project-1/restore', { draftVersion: 7 }))
         expect(response.statusCode).toBe(200)
         expect(response.json()).toEqual({ restored: true })
         expect(mocks.execute.mock.calls.some(call => String(call[0]).includes('disabled = FALSE'))).toBe(true)
@@ -127,7 +127,7 @@ describe('disabled distribution lifecycle routes', () => {
             throw new Error(`Unexpected query: ${sql}`)
         })
         const app = await createApp('ADMIN')
-        const response = await app.inject(mutation('POST', '/api/v1/projects/project-1/restore', { revision: 7 }))
+        const response = await app.inject(mutation('POST', '/api/v1/projects/project-1/restore', { draftVersion: 7 }))
 
         expect(response.statusCode).toBe(409)
         expect(response.json()).toMatchObject({ title: 'Permanent deletion already requested' })
@@ -136,13 +136,13 @@ describe('disabled distribution lifecycle routes', () => {
     it('validates the exact distribution name before queueing permanent deletion', async () => {
         const app = await createApp('ADMIN')
         const mismatch = await app.inject(mutation('POST', '/api/v1/projects/project-1/purge', {
-            revision: 7,
+            draftVersion: 7,
             confirmationName: 'Wrong Project'
         }))
         expect(mismatch.statusCode).toBe(400)
 
         const response = await app.inject(mutation('POST', '/api/v1/projects/project-1/purge', {
-            revision: 7,
+            draftVersion: 7,
             confirmationName: 'Test Project'
         }))
         expect(response.statusCode).toBe(202)
@@ -158,7 +158,7 @@ describe('disabled distribution lifecycle routes', () => {
         })
         const app = await createApp('ADMIN')
         const response = await app.inject(mutation('POST', '/api/v1/projects/project-1/purge', {
-            revision: 7,
+            draftVersion: 7,
             confirmationName: 'Test Project'
         }))
 
@@ -175,7 +175,7 @@ describe('disabled distribution lifecycle routes', () => {
             throw new Error(`Unexpected query: ${sql}`)
         })
         const app = await createApp('ADMIN')
-        const response = await app.inject(mutation('POST', '/api/v1/projects/project-1/purge/retry', { revision: 7 }))
+        const response = await app.inject(mutation('POST', '/api/v1/projects/project-1/purge/retry', { draftVersion: 7 }))
 
         expect(response.statusCode).toBe(202)
         expect(response.json()).toEqual({ queued: true, deletionId: 'deletion-1' })

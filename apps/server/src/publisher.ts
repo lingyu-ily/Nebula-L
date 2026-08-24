@@ -96,11 +96,11 @@ export interface ProjectSnapshot {
     description: string
     rss: string
     discord: unknown
-    draftRevision: number
+    sourceDraftVersion: number
     servers: SnapshotServer[]
 }
 
-interface JobRow extends RowDataPacket {
+export interface JobRow extends RowDataPacket {
     id: string
     project_id: string
     kind: 'PUBLISH' | 'CURSEFORGE_IMPORT'
@@ -213,6 +213,15 @@ function parseJson<T>(value: T | string | null): T | null {
     return JSON.parse(value) as T
 }
 
+function parseProjectSnapshot(value: JobRow['snapshot']): ProjectSnapshot {
+    const snapshot = parseJson(value) as (ProjectSnapshot & { draftRevision?: number }) | null
+    const sourceDraftVersion = snapshot?.sourceDraftVersion ?? snapshot?.draftRevision
+    if (!snapshot || typeof sourceDraftVersion !== 'number' || !Number.isInteger(sourceDraftVersion) || sourceDraftVersion < 0) {
+        throw new Error('Publish snapshot does not contain a valid draft version')
+    }
+    return { ...snapshot, sourceDraftVersion }
+}
+
 const LAUNCHER_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 const LAUNCHER_VIDEO_TYPES = new Set(['video/mp4', 'video/webm'])
 
@@ -307,7 +316,7 @@ export async function buildProjectSnapshot(connection: PoolConnection, projectId
         description: project.description,
         rss: project.rss,
         discord: parseJson(project.discord),
-        draftRevision: Number(project.draft_revision),
+        sourceDraftVersion: Number(project.draft_revision),
         servers: serverRows.map(server => ({
             id: server.id,
             serverKey: server.server_key,
@@ -800,7 +809,7 @@ async function persistRelease(
                 created_by, created_at, activated_at
              ) VALUES (?, ?, ?, ?, 'AVAILABLE', ?, ?, ?, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))
              ON DUPLICATE KEY UPDATE snapshot = VALUES(snapshot), distribution_key = VALUES(distribution_key)`,
-            [job.id, job.project_id, job.id, snapshot.draftRevision, JSON.stringify(snapshot), distributionKey, job.created_by]
+            [job.id, job.project_id, job.id, snapshot.sourceDraftVersion, JSON.stringify(snapshot), distributionKey, job.created_by]
         )
         await connection.execute('DELETE FROM release_files WHERE release_id = ?', [job.id])
         for (const file of files) {
@@ -813,21 +822,40 @@ async function persistRelease(
     })
 }
 
-async function activateRelease(job: JobRow, snapshot: ProjectSnapshot): Promise<void> {
-    await withTransaction(async connection => {
+export async function activateRelease(job: JobRow, snapshot: ProjectSnapshot): Promise<number> {
+    return withTransaction(async connection => {
         const [actors] = await connection.query<ActorRow[]>('SELECT id, username, role FROM users WHERE id = ?', [job.created_by])
         const actor = actors[0]
+        const [projects] = await connection.query<(RowDataPacket & { release_revision: number })[]>(
+            'SELECT release_revision FROM projects WHERE id = ? AND disabled = FALSE FOR UPDATE',
+            [job.project_id]
+        )
+        if (!projects[0]) {
+            throw new Error('Project not found')
+        }
+        const [releases] = await connection.query<(RowDataPacket & { release_revision: number | null })[]>(
+            'SELECT release_revision FROM releases WHERE id = ? AND project_id = ? FOR UPDATE',
+            [job.id, job.project_id]
+        )
+        if (!releases[0]) {
+            throw new Error('Release not found')
+        }
+        const releaseRevision = releases[0].release_revision == null
+            ? Number(projects[0].release_revision) + 1
+            : Number(releases[0].release_revision)
         await connection.execute(
             'UPDATE releases SET status = \'AVAILABLE\' WHERE project_id = ? AND status = \'ACTIVE\' AND id <> ?',
             [job.project_id, job.id]
         )
         await connection.execute(
-            'UPDATE releases SET status = \'ACTIVE\', activated_at = UTC_TIMESTAMP(3) WHERE id = ?',
-            [job.id]
+            `UPDATE releases SET release_revision = ?, status = 'ACTIVE', activated_at = UTC_TIMESTAMP(3)
+             WHERE id = ?`,
+            [releaseRevision, job.id]
         )
         await connection.execute(
-            'UPDATE projects SET active_release_id = ?, updated_at = UTC_TIMESTAMP(3) WHERE id = ?',
-            [job.id, job.project_id]
+            `UPDATE projects SET release_revision = GREATEST(release_revision, ?), active_release_id = ?,
+             updated_at = UTC_TIMESTAMP(3) WHERE id = ?`,
+            [releaseRevision, job.id, job.project_id]
         )
         await connection.execute('UPDATE servers SET published_once = TRUE WHERE project_id = ?', [job.project_id])
         await connection.execute(
@@ -843,15 +871,16 @@ async function activateRelease(job: JobRow, snapshot: ProjectSnapshot): Promise<
             entityType: 'release',
             entityId: job.id,
             projectId: job.project_id,
-            after: { draftRevision: snapshot.draftRevision }
+            after: { releaseRevision, sourceDraftVersion: snapshot.sourceDraftVersion }
         })
+        return releaseRevision
     })
 }
 
 async function enforceRetention(projectId: string, activeReleaseId: string): Promise<void> {
     const [retainedReleases] = await getPool().execute<(RowDataPacket & { id: string, distribution_key: string })[]>(
         `SELECT id, distribution_key FROM releases
-         WHERE project_id = ? AND status IN ('ACTIVE','AVAILABLE')
+         WHERE project_id = ? AND release_revision IS NOT NULL AND status IN ('ACTIVE','AVAILABLE')
          ORDER BY activated_at DESC, id DESC`,
         [projectId]
     )
@@ -870,7 +899,7 @@ async function enforceRetention(projectId: string, activeReleaseId: string): Pro
 }
 
 export async function publishJob(job: JobRow): Promise<void> {
-    const snapshot = parseJson(job.snapshot) as ProjectSnapshot
+    const snapshot = parseProjectSnapshot(job.snapshot)
     validateSnapshot(snapshot)
     const workspace = await mkdtemp(join(tmpdir(), 'nebula-publish-'))
     const releasePrefix = `public/${snapshot.slug}/releases/${job.id}`
@@ -918,7 +947,8 @@ export async function publishJob(job: JobRow): Promise<void> {
             releaseId: job.id
         })
         await activateRelease(job, snapshot)
-        await enforceRetention(snapshot.id, job.id)
+        // The release is already public and versioned; retention cleanup cannot make that publish fail retroactively.
+        await enforceRetention(snapshot.id, job.id).catch(() => undefined)
     } finally {
         await rm(workspace, { recursive: true, force: true })
     }

@@ -100,7 +100,7 @@ function ServerHeader({ detail }: { detail: ServerDetail }): ReactNode {
             <div className="server-header-badges">
                 {detail.server.mainServer && <span className="pill">{t('mainServer')}</span>}
                 {detail.server.autoconnect && <span className="pill">{t('autoconnect')}</span>}
-                <span className="pill">{t('revision')} {detail.project.draftRevision}</span>
+                <span className="pill">{detail.project.releaseRevision == null ? t('notPublished') : `${t('revision')} ${detail.project.releaseRevision}`}</span>
             </div>
         </header>
         <nav className="server-tabs" aria-label={t('serverNavigation')}>
@@ -200,7 +200,7 @@ function ServerForm({ project, server, initialSortOrder, canEdit, onDone }: Serv
         const iconValue = data.get('icon')
         mutation.mutate({
             value: {
-                revision: project.draftRevision,
+                draftVersion: project.draftVersion,
                 serverKey: String(data.get('serverKey') ?? server?.serverKey),
                 name: String(data.get('name')),
                 description: String(data.get('description')),
@@ -409,7 +409,7 @@ export function ServerSettingsPage({ user }: { user: ApiUser }): ReactNode {
             if (!detail.data) throw new Error('Server is not loaded')
             return api(`/api/v1/projects/${projectId}/servers/${serverId}`, {
                 method: 'DELETE',
-                ...jsonBody({ revision: detail.data.project.draftRevision })
+                ...jsonBody({ draftVersion: detail.data.project.draftVersion })
             })
         },
         onSuccess: () => {
@@ -610,12 +610,12 @@ export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
                 if (!videoUrl.trim()) throw new Error(t('launcherVideoUrlRequired'))
                 video = { source: videoSource, url: videoUrl.trim() }
             }
-            return api<{ draftRevision: number }>(
+            return api<{ draftVersion: number }>(
                 `/api/v1/projects/${projectId}/servers/${serverId}/launcher-ui`,
                 {
                     method: 'PATCH',
                     ...jsonBody({
-                        revision: detail.data.project.draftRevision,
+                        draftVersion: detail.data.project.draftVersion,
                         backgroundUploadId,
                         logoUploadId,
                         video,
@@ -980,13 +980,75 @@ function rootFolders(server: ManagedServer, labels: {
     return roots
 }
 
+function explorerPathChain(path: string): string[] {
+    const chain = ['']
+    let current = ''
+    for (const part of path.split('/').filter(Boolean)) {
+        current = current ? `${current}/${part}` : part
+        chain.push(current)
+    }
+    return chain
+}
+
+function ExplorerTreeRow({
+    name,
+    path,
+    depth,
+    currentPath,
+    icon,
+    warning = false,
+    hasChildren,
+    expanded,
+    onToggle,
+    onOpen
+}: {
+    name: string
+    path: string
+    depth: number
+    currentPath: string
+    icon: string
+    warning?: boolean
+    hasChildren: boolean
+    expanded: boolean
+    onToggle: (path: string) => void
+    onOpen: (path: string) => void
+}): ReactNode {
+    const { t } = useTranslation()
+    return <div className="explorer-tree-row" style={{ paddingLeft: `${depth * 14}px` }}>
+        {hasChildren
+            ? <button
+                type="button"
+                className="tree-toggle"
+                aria-expanded={expanded}
+                aria-label={t(expanded ? 'collapseFolder' : 'expandFolder', { name })}
+                onClick={() => onToggle(path)}
+            ><span aria-hidden="true">{expanded ? '▾' : '▸'}</span></button>
+            : <span className="tree-toggle-spacer" aria-hidden="true" />}
+        <button
+            type="button"
+            className={currentPath === path ? 'tree-open active' : 'tree-open'}
+            aria-label={name}
+            aria-current={currentPath === path ? 'page' : undefined}
+            onClick={() => onOpen(path)}
+        >
+            <span className="tree-icon" aria-hidden="true">{icon}</span>
+            <span className="tree-label">{name}</span>
+            {warning && <span className="tree-warning" aria-hidden="true">!</span>}
+        </button>
+    </div>
+}
+
 function ExplorerTree({
     detail,
     currentPath,
+    expandedPaths,
+    onToggle,
     onOpen
 }: {
     detail: ServerDetail
     currentPath: string
+    expandedPaths: ReadonlySet<string>
+    onToggle: (path: string) => void
     onOpen: (path: string) => void
 }): ReactNode {
     const { t } = useTranslation()
@@ -997,32 +1059,77 @@ function ExplorerTree({
         fabricMods: 'Fabric Mods'
     })
     const directories = [...detail.directories].sort((left, right) => left.path.localeCompare(right.path))
-    return <aside className="explorer-tree" aria-label={t('folders')}>
-        <button className={currentPath === '' ? 'active' : ''} onClick={() => onOpen('')}>
-            <span className="tree-icon">▣</span>{detail.server.name}
-        </button>
-        {roots.map(root => <div key={root.id}>
-            <button className={currentPath === root.path ? 'active' : ''} onClick={() => onOpen(root.path)}>
-                <span className="tree-icon">▸</span>{root.name}{root.warning && <span className="tree-warning">!</span>}
-            </button>
-            {root.path === 'files' && directories.map(directory => {
-                const logicalPath = `files/${directory.path}`
-                const depth = directory.path.split('/').length
-                return <button
-                    key={directory.id}
-                    className={currentPath === logicalPath ? 'active tree-child' : 'tree-child'}
-                    style={{ paddingLeft: `${24 + depth * 14}px` }}
-                    onClick={() => onOpen(logicalPath)}
-                ><span className="tree-icon">⌙</span>{baseName(directory.path)}</button>
-            })}
-            {(root.path === 'forgemods' || root.path === 'fabricmods') && ['required', 'optionalon', 'optionaloff'].map(folder =>
-                <button
-                    key={folder}
-                    className={currentPath === `${root.path}/${folder}` ? 'active tree-child' : 'tree-child'}
-                    onClick={() => onOpen(`${root.path}/${folder}`)}
-                ><span className="tree-icon">⌙</span>{t(folder)}</button>
-            )}
-        </div>)}
+    const directoryParents = new Set(directories.map(directory => {
+        const parent = parentPath(directory.path)
+        return parent ? `files/${parent}` : 'files'
+    }))
+    const rootsVisible = expandedPaths.has('')
+    return <aside className="explorer-tree" aria-label={t('folderNavigation')}>
+        <ExplorerTreeRow
+            name={detail.server.name}
+            path=""
+            depth={0}
+            currentPath={currentPath}
+            icon="▣"
+            hasChildren={roots.length > 0}
+            expanded={rootsVisible}
+            onToggle={onToggle}
+            onOpen={onOpen}
+        />
+        {rootsVisible && roots.map(root => {
+            const hasChildren = root.path === 'files'
+                ? directoryParents.has('files')
+                : root.path === 'forgemods' || root.path === 'fabricmods'
+            const expanded = expandedPaths.has(root.path)
+            return <div key={root.id}>
+                <ExplorerTreeRow
+                    name={root.name}
+                    path={root.path}
+                    depth={1}
+                    currentPath={currentPath}
+                    icon="⌙"
+                    warning={root.warning}
+                    hasChildren={hasChildren}
+                    expanded={expanded}
+                    onToggle={onToggle}
+                    onOpen={onOpen}
+                />
+                {root.path === 'files' && expanded && directories.map(directory => {
+                    const logicalPath = `files/${directory.path}`
+                    const depth = directory.path.split('/').length
+                    const parentPaths = explorerPathChain(parentPath(logicalPath)).filter(path => path !== '')
+                    if (!parentPaths.every(path => expandedPaths.has(path))) return null
+                    return <ExplorerTreeRow
+                        key={directory.id}
+                        name={baseName(directory.path)}
+                        path={logicalPath}
+                        depth={depth + 1}
+                        currentPath={currentPath}
+                        icon="⌙"
+                        hasChildren={directoryParents.has(logicalPath)}
+                        expanded={expandedPaths.has(logicalPath)}
+                        onToggle={onToggle}
+                        onOpen={onOpen}
+                    />
+                })}
+                {(root.path === 'forgemods' || root.path === 'fabricmods') && expanded
+                    && ['required', 'optionalon', 'optionaloff'].map(folder => {
+                        const path = `${root.path}/${folder}`
+                        return <ExplorerTreeRow
+                            key={folder}
+                            name={t(folder)}
+                            path={path}
+                            depth={2}
+                            currentPath={currentPath}
+                            icon="⌙"
+                            hasChildren={false}
+                            expanded={false}
+                            onToggle={onToggle}
+                            onOpen={onOpen}
+                        />
+                    })}
+            </div>
+        })}
     </aside>
 }
 
@@ -1192,6 +1299,7 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
     const { t } = useTranslation()
     const queryClient = useQueryClient()
     const [currentPath, setCurrentPath] = useState('')
+    const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set(['']))
     const [search, setSearch] = useState('')
     const [sortBy, setSortBy] = useState<ExplorerSort>('name')
     const [direction, setDirection] = useState<'asc' | 'desc'>('asc')
@@ -1248,6 +1356,10 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
         setUploadInputError(null)
     }, [currentPath])
     useEffect(() => {
+        setCurrentPath('')
+        setExpandedPaths(new Set(['']))
+    }, [detail.server.id])
+    useEffect(() => {
         const visibleKeys = new Set(selectableKeys)
         setSelectedKeys(current => {
             const next = new Set([...current].filter(key => visibleKeys.has(key)))
@@ -1284,7 +1396,7 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
             `/api/v1/projects/${detail.project.id}/servers/${detail.server.id}/directories`,
             {
                 method: 'POST',
-                ...jsonBody({ revision: detail.project.draftRevision, path })
+                ...jsonBody({ draftVersion: detail.project.draftVersion, path })
             }
         ))
     }
@@ -1342,7 +1454,7 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
         action.mutate(async () => {
             let completed = 0
             let createdFolders = 0
-            let revision = detail.project.draftRevision
+            let draftVersion = detail.project.draftVersion
             try {
                 for (const path of directoriesToCreate) {
                     setUploadProgress({
@@ -1351,14 +1463,14 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
                         total: directoriesToCreate.length,
                         currentFile: path
                     })
-                    const created = await api<{ draftRevision: number }>(
+                    const created = await api<{ draftVersion: number }>(
                         `/api/v1/projects/${detail.project.id}/servers/${detail.server.id}/directories`,
                         {
                             method: 'POST',
-                            ...jsonBody({ revision, path })
+                            ...jsonBody({ draftVersion, path })
                         }
                     )
-                    revision = created.draftRevision
+                    draftVersion = created.draftVersion
                     createdFolders += 1
                 }
                 for (const value of resolvedFiles) {
@@ -1383,12 +1495,12 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
                         ? value.relativePath
                         : null
                     try {
-                        const created = await api<{ id: string, draftRevision: number }>(
+                        const created = await api<{ id: string, draftVersion: number }>(
                             `/api/v1/projects/${detail.project.id}/servers/${detail.server.id}/modules`,
                             {
                                 method: 'POST',
                                 ...jsonBody({
-                                    revision,
+                                    draftVersion,
                                     uploadId: stored.id,
                                     type: batchTarget.type,
                                     displayName: value.file.name,
@@ -1399,7 +1511,7 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
                                 })
                             }
                         )
-                        revision = created.draftRevision
+                        draftVersion = created.draftVersion
                     } catch (error) {
                         await api(`/api/v1/projects/${detail.project.id}/uploads/${stored.id}`, {
                             method: 'DELETE'
@@ -1518,14 +1630,14 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
                 `/api/v1/projects/${detail.project.id}/servers/${detail.server.id}/directories/${selected.id}`,
                 {
                     method: 'PATCH',
-                    ...jsonBody({ revision: detail.project.draftRevision, path })
+                    ...jsonBody({ draftVersion: detail.project.draftVersion, path })
                 }
             ))
             return
         }
         action.mutate(() => api(moduleUrl(selected.id), {
             method: 'PATCH',
-            ...jsonBody({ revision: detail.project.draftRevision, fileName: name })
+            ...jsonBody({ draftVersion: detail.project.draftVersion, fileName: name })
         }))
     }
     const move = (): void => {
@@ -1541,7 +1653,7 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
             {
                 method: 'POST',
                 ...jsonBody({
-                    revision: detail.project.draftRevision,
+                    draftVersion: detail.project.draftVersion,
                     entries: selectedRefs(),
                     destinationPath: normalizedDestination
                 })
@@ -1564,14 +1676,14 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
         }
         action.mutate(() => api(moduleUrl(selected.id), {
             method: 'PATCH',
-            ...jsonBody({ revision: detail.project.draftRevision, displayName, optionalMode })
+            ...jsonBody({ draftVersion: detail.project.draftVersion, displayName, optionalMode })
         }))
     }
     const setChecksumValidation = (module: ManagedModule, validateChecksum: boolean): void => {
         if (!canEdit || module.type !== 'File' || action.isPending) return
         action.mutate(() => api(moduleUrl(module.id), {
             method: 'PATCH',
-            ...jsonBody({ revision: detail.project.draftRevision, validateChecksum })
+            ...jsonBody({ draftVersion: detail.project.draftVersion, validateChecksum })
         }))
     }
     const remove = (): void => {
@@ -1605,7 +1717,7 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
             {
                 method: 'POST',
                 ...jsonBody({
-                    revision: detail.project.draftRevision,
+                    draftVersion: detail.project.draftVersion,
                     entries: selectedRefs(),
                     recursive: true
                 })
@@ -1618,7 +1730,7 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
             const stored = await upload(file)
             return api(`${moduleUrl(selected.id)}/replace`, {
                 method: 'POST',
-                ...jsonBody({ revision: detail.project.draftRevision, uploadId: stored.id })
+                ...jsonBody({ draftVersion: detail.project.draftVersion, uploadId: stored.id })
             })
         })
     }
@@ -1649,8 +1761,24 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
             window.setTimeout(() => URL.revokeObjectURL(url), 0)
         })
     }
+    const openPath = (path: string): void => {
+        setExpandedPaths(current => {
+            const next = new Set(current)
+            for (const ancestor of explorerPathChain(path)) next.add(ancestor)
+            return next
+        })
+        setCurrentPath(path)
+    }
+    const toggleExpandedPath = (path: string): void => {
+        setExpandedPaths(current => {
+            const next = new Set(current)
+            if (next.has(path)) next.delete(path)
+            else next.add(path)
+            return next
+        })
+    }
     const open = (entry: ExplorerEntry): void => {
-        if (entry.kind !== 'module') setCurrentPath(entry.path)
+        if (entry.kind !== 'module') openPath(entry.path)
     }
     const canMoveSelection = selectedEntries.length > 0 && selectedEntries.every(entry =>
         entry.kind === 'directory' || entry.module.type === 'File'
@@ -1660,7 +1788,7 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
     const breadcrumbs = currentPath ? currentPath.split('/') : []
     return <section className="explorer-card">
         <div className="explorer-toolbar">
-            <button className="secondary" onClick={() => setCurrentPath(parentPath(currentPath))} disabled={!currentPath}>←</button>
+            <button className="secondary" onClick={() => openPath(parentPath(currentPath))} disabled={!currentPath}>←</button>
             {canEdit && <button className="secondary" onClick={createFolder} disabled={!currentPath.startsWith('files')}>{t('newFolder')}</button>}
             {canEdit && <button className="secondary" onClick={() => uploadInput.current?.click()} disabled={!target || action.isPending || dropReading}>{t('upload')}</button>}
             <input
@@ -1698,7 +1826,7 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
         </div>
         <div className="explorer-address">
             <span>{t('location')}</span>
-            <button onClick={() => setCurrentPath('')}>{detail.server.name}</button>
+            <button onClick={() => openPath('')}>{detail.server.name}</button>
             {breadcrumbs.map((part, index) => {
                 const path = breadcrumbs.slice(0, index + 1).join('/')
                 const label = part === 'files'
@@ -1708,7 +1836,7 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
                         : ['required', 'optionalon', 'optionaloff'].includes(part)
                             ? t(part)
                             : part
-                return <span key={path}>› <button onClick={() => setCurrentPath(path)}>{label}</button></span>
+                return <span key={path}>› <button onClick={() => openPath(path)}>{label}</button></span>
             })}
             <input
                 value={search}
@@ -1718,7 +1846,13 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
             />
         </div>
         <div className="explorer-body">
-            <ExplorerTree detail={detail} currentPath={currentPath} onOpen={setCurrentPath} />
+            <ExplorerTree
+                detail={detail}
+                currentPath={currentPath}
+                expandedPaths={expandedPaths}
+                onToggle={toggleExpandedPath}
+                onOpen={openPath}
+            />
             <div
                 className={`explorer-main${dragActive ? ' drag-active' : ''}`}
                 onDragEnter={handleDragEnter}

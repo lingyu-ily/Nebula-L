@@ -266,7 +266,7 @@ export const moduleReplaceSchema = z.object({
 })
 
 export const publishSchema = z.object({
-    revision: z.number().int().nonnegative()
+    draftVersion: z.number().int().nonnegative()
 })
 
 export const curseForgeImportSchema = z.object({

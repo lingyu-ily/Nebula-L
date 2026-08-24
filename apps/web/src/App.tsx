@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Link, NavLink, Navigate, Route, Routes, useNavigate, useParams } from './router.js'
@@ -161,23 +161,23 @@ function ProjectsPage({ user }: { user: ApiUser }): ReactNode {
         onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['projects'] })
     })
     const restoreProject = useMutation({
-        mutationFn: ({ id, revision }: { id: string, revision: number }) => api(`/api/v1/projects/${id}/restore`, {
+        mutationFn: ({ id, draftVersion }: { id: string, draftVersion: number }) => api(`/api/v1/projects/${id}/restore`, {
             method: 'POST',
-            ...jsonBody({ revision })
+            ...jsonBody({ draftVersion })
         }),
         onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['projects'] })
     })
     const purgeProject = useMutation({
-        mutationFn: ({ id, revision, confirmationName }: { id: string, revision: number, confirmationName: string }) => api(`/api/v1/projects/${id}/purge`, {
+        mutationFn: ({ id, draftVersion, confirmationName }: { id: string, draftVersion: number, confirmationName: string }) => api(`/api/v1/projects/${id}/purge`, {
             method: 'POST',
-            ...jsonBody({ revision, confirmationName })
+            ...jsonBody({ draftVersion, confirmationName })
         }),
         onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['projects', 'disabled'] })
     })
     const retryPurge = useMutation({
-        mutationFn: ({ id, revision }: { id: string, revision: number }) => api(`/api/v1/projects/${id}/purge/retry`, {
+        mutationFn: ({ id, draftVersion }: { id: string, draftVersion: number }) => api(`/api/v1/projects/${id}/purge/retry`, {
             method: 'POST',
-            ...jsonBody({ revision })
+            ...jsonBody({ draftVersion })
         }),
         onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['projects', 'disabled'] })
     })
@@ -194,7 +194,7 @@ function ProjectsPage({ user }: { user: ApiUser }): ReactNode {
     }
     const confirmRestore = (project: DisabledProject): void => {
         if (window.confirm(t('confirmRestoreProject', { name: project.name }))) {
-            restoreProject.mutate({ id: project.id, revision: project.draftRevision })
+            restoreProject.mutate({ id: project.id, draftVersion: project.draftVersion })
         }
     }
     const confirmPurge = (project: DisabledProject): void => {
@@ -205,7 +205,7 @@ function ProjectsPage({ user }: { user: ApiUser }): ReactNode {
             window.alert(t('purgeProjectNameMismatch'))
             return
         }
-        purgeProject.mutate({ id: project.id, revision: project.draftRevision, confirmationName })
+        purgeProject.mutate({ id: project.id, draftVersion: project.draftVersion, confirmationName })
     }
     return <>
         <header className="page-header"><div><p className="eyebrow">CONTROL PLANE</p><h1>{t('projects')}</h1></div></header>
@@ -223,7 +223,7 @@ function ProjectsPage({ user }: { user: ApiUser }): ReactNode {
             {projects.data?.items.map(project => <Link className="project-card" to={`/projects/${project.id}`} key={project.id}>
                 <div className="project-card-top"><span className={`status-dot ${project.activeReleaseId ? 'online' : ''}`} /><span>{project.activeReleaseId ? t('active') : t('draft')}</span></div>
                 <h2>{project.name}</h2><p>{project.description || project.slug}</p>
-                <footer><code>/{project.slug}</code><span>{t('revision')} {project.draftRevision}</span></footer>
+                <footer><code>/{project.slug}</code><span>{project.releaseRevision == null ? t('notPublished') : `${t('revision')} ${project.releaseRevision}`}</span></footer>
             </Link>)}
             {!projects.isLoading && projects.data?.items.length === 0 && <div className="empty">{t('noProjects')}</div>}
         </div>
@@ -257,7 +257,7 @@ function ProjectsPage({ user }: { user: ApiUser }): ReactNode {
                             {deletion?.status === 'FAILED' && <button
                                 className="danger-button"
                                 disabled={retryPending}
-                                onClick={() => retryPurge.mutate({ id: project.id, revision: project.draftRevision })}
+                                onClick={() => retryPurge.mutate({ id: project.id, draftVersion: project.draftVersion })}
                             >{retryPending ? t('queueingPurge') : t('retryPurge')}</button>}
                         </div>
                     </article>
@@ -280,7 +280,7 @@ function ProjectSettings({ detail, canEdit }: { detail: ProjectDetail, canEdit: 
         event.preventDefault()
         const data = new FormData(event.currentTarget)
         update.mutate({
-            revision: detail.project.draftRevision,
+            draftVersion: detail.project.draftVersion,
             name: String(data.get('name')),
             slug: String(data.get('slug') ?? detail.project.slug),
             description: String(data.get('description')),
@@ -340,16 +340,16 @@ function ServerPanel({ detail, canEdit }: { detail: ProjectDetail, canEdit: bool
     })
     const orderChanged = orderedIds.some((id, index) => id !== detail.servers[index]?.id)
     const saveOrder = useMutation({
-        mutationFn: (serverIds: string[]) => api<{ updated: boolean, draftRevision: number }>(`/api/v1/projects/${detail.project.id}/servers/order`, {
+        mutationFn: (serverIds: string[]) => api<{ updated: boolean, draftVersion: number }>(`/api/v1/projects/${detail.project.id}/servers/order`, {
             method: 'PUT',
-            ...jsonBody({ revision: detail.project.draftRevision, serverIds })
+            ...jsonBody({ draftVersion: detail.project.draftVersion, serverIds })
         }),
         onSuccess: (response, serverIds) => {
             queryClient.setQueryData<ProjectDetail>(['project', detail.project.id], current => {
                 if (!current) return current
                 const serversById = new Map(current.servers.map(server => [server.id, server]))
                 return {
-                    project: { ...current.project, draftRevision: response.draftRevision },
+                    project: { ...current.project, draftVersion: response.draftVersion },
                     servers: serverIds.flatMap((id, sortOrder) => {
                         const server = serversById.get(id)
                         return server ? [{ ...server, sortOrder }] : []
@@ -467,6 +467,16 @@ function ReleasePanel({ project, canEdit }: { project: Project, canEdit: boolean
         queryFn: () => api<PaginatedResponse<Release>>(`/api/v1/projects/${project.id}/releases?limit=${HISTORY_PAGE_SIZE}&offset=${releasePage * HISTORY_PAGE_SIZE}`),
         refetchInterval: releasePage === 0 ? 5000 : false
     })
+    const latestSuccessfulPublishId = jobs.data?.items.find(job =>
+        job.kind === 'PUBLISH' && job.status === 'SUCCEEDED'
+    )?.id
+    useEffect(() => {
+        if (!latestSuccessfulPublishId) return
+        setReleasePage(0)
+        void queryClient.invalidateQueries({ queryKey: ['projects'] })
+        void queryClient.invalidateQueries({ queryKey: ['project', project.id] })
+        void queryClient.invalidateQueries({ queryKey: ['releases', project.id] })
+    }, [latestSuccessfulPublishId, project.id, queryClient])
     const retry = useMutation({ mutationFn: (id: string) => api(`/api/v1/jobs/${id}/retry`, { method: 'POST' }), onSuccess: () => void jobs.refetch() })
     const activate = useMutation({
         mutationFn: (id: string) => api(`/api/v1/projects/${project.id}/releases/${id}/activate`, { method: 'POST' }),
@@ -496,7 +506,7 @@ function ReleasePanel({ project, canEdit }: { project: Project, canEdit: boolean
         /></section>
         <section className="card"><h2>{t('releases')}</h2>{releases.data?.items.map(release => <div className="timeline-row" key={release.id}>
             <span className={`job-state ${release.status === 'ACTIVE' ? 'state-succeeded' : ''}`} />
-            <div><strong>r{release.draftRevision}</strong><small>{new Date(release.activatedAt).toLocaleString()} · {release.createdBy}</small></div>
+            <div><strong>r{release.releaseRevision}</strong><small>{new Date(release.activatedAt).toLocaleString()} · {release.createdBy}</small></div>
             <span className="pill">{release.status}</span>
             {canEdit && release.retained && release.status !== 'ACTIVE' && <button className="text-button" onClick={() => window.confirm(t('confirmRollback')) && activate.mutate(release.id)}>{t('rollback')}</button>}
         </div>)}{releases.data?.items.length === 0 && <div className="empty">{t('noRecords')}</div>}
@@ -518,11 +528,11 @@ function ProjectPage({ user }: { user: ApiUser }): ReactNode {
     const navigate = useNavigate()
     const detail = useQuery({ queryKey: ['project', projectId], queryFn: () => api<ProjectDetail>(`/api/v1/projects/${projectId}`) })
     const publish = useMutation({
-        mutationFn: (revision: number) => api<{ jobId: string }>(`/api/v1/projects/${projectId}/publish`, { method: 'POST', ...jsonBody({ revision }) }),
+        mutationFn: (draftVersion: number) => api<{ jobId: string }>(`/api/v1/projects/${projectId}/publish`, { method: 'POST', ...jsonBody({ draftVersion }) }),
         onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['jobs', projectId] })
     })
     const disableProject = useMutation({
-        mutationFn: (revision: number) => api(`/api/v1/projects/${projectId}`, { method: 'DELETE', ...jsonBody({ revision }) }),
+        mutationFn: (draftVersion: number) => api(`/api/v1/projects/${projectId}`, { method: 'DELETE', ...jsonBody({ draftVersion }) }),
         onSuccess: () => {
             void queryClient.invalidateQueries({ queryKey: ['projects'] })
             queryClient.removeQueries({ queryKey: ['project', projectId], exact: true })
@@ -541,16 +551,16 @@ function ProjectPage({ user }: { user: ApiUser }): ReactNode {
             window.alert(t('disableProjectNameMismatch'))
             return
         }
-        disableProject.mutate(project.draftRevision)
+        disableProject.mutate(project.draftVersion)
     }
     return <>
-        <header className="page-header project-header"><div><Link to="/projects" className="back-link">← {t('projects')}</Link><h1>{project.name}</h1><p><code>/{project.slug}</code> · {t('revision')} {project.draftRevision}</p></div>
-            {canEdit && <div className="publish-block"><button className="publish-button" disabled={publish.isPending} onClick={() => window.confirm(t('confirmPublish')) && publish.mutate(project.draftRevision)}>{publish.isPending ? t('publishing') : t('publish')}</button><small>{t('publishHint')}</small></div>}
+        <header className="page-header project-header"><div><Link to="/projects" className="back-link">← {t('projects')}</Link><h1>{project.name}</h1><p><code>/{project.slug}</code> · {project.releaseRevision == null ? t('notPublished') : `${t('revision')} ${project.releaseRevision}`}</p></div>
+            {canEdit && <div className="publish-block"><button className="publish-button" disabled={publish.isPending} onClick={() => window.confirm(t('confirmPublish')) && publish.mutate(project.draftVersion)}>{publish.isPending ? t('publishing') : t('publish')}</button><small>{t('publishHint')}</small></div>}
         </header>
         <ErrorNotice error={publish.error} />
         <LauncherPanel project={project} />
         <ProjectSettings detail={detail.data} canEdit={canEdit} />
-        <ServerPanel key={project.draftRevision} detail={detail.data} canEdit={canEdit} />
+        <ServerPanel key={project.draftVersion} detail={detail.data} canEdit={canEdit} />
         <CurseForgePanel detail={detail.data} canEdit={canEdit} />
         <ReleasePanel key={project.id} project={project} canEdit={canEdit} />
         {user.role === 'ADMIN' && <section className="card danger-zone">

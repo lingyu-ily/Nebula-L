@@ -34,6 +34,7 @@ interface ReleaseRow extends RowDataPacket {
     id: string
     project_id: string
     draft_revision: number
+    release_revision: number
     status: 'ACTIVE' | 'AVAILABLE' | 'DELETED'
     distribution_key: string
     created_at: Date
@@ -52,7 +53,7 @@ export async function registerReleaseRoutes(app: FastifyInstance): Promise<void>
         const jobId = randomUUID()
         await withTransaction(async connection => {
             const snapshot = await buildProjectSnapshot(connection, projectId)
-            if (snapshot.draftRevision !== parsed.data.revision) {
+            if (snapshot.sourceDraftVersion !== parsed.data.draftVersion) {
                 throw new HttpError(409, 'Draft changed', 'Reload the project before publishing')
             }
             const [activeJobs] = await connection.query<RowDataPacket[]>(
@@ -77,7 +78,7 @@ export async function registerReleaseRoutes(app: FastifyInstance): Promise<void>
                 entityType: 'job',
                 entityId: jobId,
                 projectId,
-                after: { draftRevision: snapshot.draftRevision }
+                after: { sourceDraftVersion: snapshot.sourceDraftVersion }
             })
         })
         return reply.status(202).send({ jobId })
@@ -144,16 +145,17 @@ export async function registerReleaseRoutes(app: FastifyInstance): Promise<void>
         const query = request.query as Record<string, unknown>
         const { limit, offset } = parsePagination({ ...query, limit: query.limit ?? 100 })
         const [rows] = await getPool().execute<ReleaseRow[]>(
-            `SELECT r.id, r.project_id, r.draft_revision, r.status, r.distribution_key,
+            `SELECT r.id, r.project_id, r.draft_revision, r.release_revision, r.status, r.distribution_key,
                     r.created_at, r.activated_at, u.username
              FROM releases r INNER JOIN users u ON u.id = r.created_by
-             WHERE r.project_id = ? ORDER BY r.activated_at DESC, r.id DESC LIMIT ? OFFSET ?`,
+             WHERE r.project_id = ? AND r.release_revision IS NOT NULL
+             ORDER BY r.activated_at DESC, r.id DESC LIMIT ? OFFSET ?`,
             [projectId, limit + 1, offset]
         )
         return createPage(rows.map(row => ({
             id: row.id,
             projectId: row.project_id,
-            draftRevision: Number(row.draft_revision),
+            releaseRevision: Number(row.release_revision),
             status: row.status,
             retained: row.status !== 'DELETED',
             createdBy: row.username,
@@ -167,7 +169,7 @@ export async function registerReleaseRoutes(app: FastifyInstance): Promise<void>
         const { projectId, releaseId } = request.params as { projectId: string, releaseId: string }
         const [rows] = await getPool().execute<(ReleaseRow & { slug: string })[]>(
             `SELECT r.*, p.slug FROM releases r INNER JOIN projects p ON p.id = r.project_id
-             WHERE r.id = ? AND r.project_id = ? AND r.status <> 'DELETED'`,
+             WHERE r.id = ? AND r.project_id = ? AND r.release_revision IS NOT NULL AND r.status <> 'DELETED'`,
             [releaseId, projectId]
         )
         const release = rows[0]
@@ -202,7 +204,8 @@ export async function registerReleaseRoutes(app: FastifyInstance): Promise<void>
                 action: 'release.activated',
                 entityType: 'release',
                 entityId: releaseId,
-                projectId
+                projectId,
+                after: { releaseRevision: Number(release.release_revision) }
             })
         })
         return { activated: true }

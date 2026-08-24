@@ -37,6 +37,8 @@ interface ProjectRow extends RowDataPacket {
     rss: string
     discord: unknown
     draft_revision: number
+    release_revision: number
+    active_release_revision?: number | null
     active_release_id: string | null
     disabled: number
     created_at: Date
@@ -116,7 +118,8 @@ function mapProject(row: ProjectRow): Record<string, unknown> {
         description: row.description,
         rss: row.rss,
         discord: row.discord,
-        draftRevision: Number(row.draft_revision),
+        draftVersion: Number(row.draft_revision),
+        releaseRevision: row.active_release_revision == null ? null : Number(row.active_release_revision),
         activeReleaseId: row.active_release_id,
         launcherUrl: getLauncherUrl(row.slug),
         disabled: Boolean(row.disabled),
@@ -188,21 +191,21 @@ function mapModule(row: ModuleRow): Record<string, unknown> {
     }
 }
 
-function getRevision(request: FastifyRequest): number {
-    const revision = Number((request.body as Record<string, unknown> | undefined)?.revision)
-    if (!Number.isInteger(revision) || revision < 0) {
-        throw new HttpError(400, 'Revision required', 'Mutation body must contain the current project revision')
+function getDraftVersion(request: FastifyRequest): number {
+    const draftVersion = Number((request.body as Record<string, unknown> | undefined)?.draftVersion)
+    if (!Number.isInteger(draftVersion) || draftVersion < 0) {
+        throw new HttpError(400, 'Draft version required', 'Mutation body must contain the current project draft version')
     }
-    return revision
+    return draftVersion
 }
 
-async function lockProject(connection: PoolConnection, projectId: string, expectedRevision: number): Promise<ProjectRow> {
+async function lockProject(connection: PoolConnection, projectId: string, expectedDraftVersion: number): Promise<ProjectRow> {
     const [rows] = await connection.query<ProjectRow[]>('SELECT * FROM projects WHERE id = ? FOR UPDATE', [projectId])
     const project = rows[0]
     if (!project || project.disabled) {
         throw new HttpError(404, 'Project not found')
     }
-    if (Number(project.draft_revision) !== expectedRevision) {
+    if (Number(project.draft_revision) !== expectedDraftVersion) {
         throw new HttpError(409, 'Draft changed', 'Reload the project before saving')
     }
     return project
@@ -303,7 +306,10 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
     }, async request => {
         const { projectId, serverId } = request.params as { projectId: string, serverId: string }
         const [projectRows] = await getPool().execute<ProjectRow[]>(
-            'SELECT * FROM projects WHERE id = ? AND disabled = FALSE',
+            `SELECT p.*, active.release_revision AS active_release_revision
+             FROM projects p
+             LEFT JOIN releases active ON active.id = p.active_release_id
+             WHERE p.id = ? AND p.disabled = FALSE`,
             [projectId]
         )
         const project = projectRows[0]
@@ -362,7 +368,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
     }, async (request, reply) => {
         requireCsrf(request)
         const { projectId, serverId } = request.params as { projectId: string, serverId: string }
-        const expectedRevision = getRevision(request)
+        const expectedDraftVersion = getDraftVersion(request)
         const parsed = directoryInputSchema.safeParse(request.body)
         if (!parsed.success) {
             throw new HttpError(400, 'Invalid directory', undefined, parsed.error.flatten())
@@ -370,7 +376,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
         const path = normalizeManagedPath(parsed.data.path)
         const id = randomUUID()
         await withTransaction(async connection => {
-            await lockProject(connection, projectId, expectedRevision)
+            await lockProject(connection, projectId, expectedDraftVersion)
             await lockServer(connection, projectId, serverId)
             const [existing] = await connection.query<DirectoryRow[]>(
                 'SELECT * FROM server_directories WHERE server_id = ? AND path_hash = ? FOR UPDATE',
@@ -410,7 +416,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
                 after: { serverId, path }
             })
         })
-        return reply.status(201).send({ id, path, draftRevision: expectedRevision + 1 })
+        return reply.status(201).send({ id, path, draftVersion: expectedDraftVersion + 1 })
     })
 
     app.patch('/api/v1/projects/:projectId/servers/:serverId/directories/:directoryId', {
@@ -422,7 +428,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
             serverId: string
             directoryId: string
         }
-        const expectedRevision = getRevision(request)
+        const expectedDraftVersion = getDraftVersion(request)
         const parsed = directoryInputSchema.safeParse(request.body)
         if (!parsed.success) {
             throw new HttpError(400, 'Invalid directory', undefined, parsed.error.flatten())
@@ -430,7 +436,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
         const target = normalizeManagedPath(parsed.data.path)
         let source = ''
         await withTransaction(async connection => {
-            await lockProject(connection, projectId, expectedRevision)
+            await lockProject(connection, projectId, expectedDraftVersion)
             await lockServer(connection, projectId, serverId)
             const [directories] = await connection.query<DirectoryRow[]>(
                 'SELECT * FROM server_directories WHERE server_id = ? AND project_id = ? FOR UPDATE',
@@ -519,7 +525,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
                 }
             })
         })
-        return { updated: true, path: target, previousPath: source, draftRevision: expectedRevision + 1 }
+        return { updated: true, path: target, previousPath: source, draftVersion: expectedDraftVersion + 1 }
     })
 
     app.delete('/api/v1/projects/:projectId/servers/:serverId/directories/:directoryId', {
@@ -531,7 +537,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
             serverId: string
             directoryId: string
         }
-        const expectedRevision = getRevision(request)
+        const expectedDraftVersion = getDraftVersion(request)
         const parsed = directoryDeleteSchema.safeParse(request.body)
         if (!parsed.success) {
             throw new HttpError(400, 'Recursive confirmation required', undefined, parsed.error.flatten())
@@ -539,7 +545,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
         let deletedDirectories = 0
         let deletedModules = 0
         await withTransaction(async connection => {
-            await lockProject(connection, projectId, expectedRevision)
+            await lockProject(connection, projectId, expectedDraftVersion)
             await lockServer(connection, projectId, serverId)
             const [directories] = await connection.query<DirectoryRow[]>(
                 'SELECT * FROM server_directories WHERE server_id = ? AND project_id = ? FOR UPDATE',
@@ -581,7 +587,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
                 after: { deletedDirectories, deletedModules }
             })
         })
-        return { deleted: true, deletedDirectories, deletedModules, draftRevision: expectedRevision + 1 }
+        return { deleted: true, deletedDirectories, deletedModules, draftVersion: expectedDraftVersion + 1 }
     })
 
     app.post('/api/v1/projects/:projectId/servers/:serverId/explorer/move', {
@@ -589,7 +595,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
     }, async request => {
         requireCsrf(request)
         const { projectId, serverId } = request.params as { projectId: string, serverId: string }
-        const expectedRevision = getRevision(request)
+        const expectedDraftVersion = getDraftVersion(request)
         const parsed = explorerMoveSchema.safeParse(request.body)
         if (!parsed.success) {
             throw new HttpError(400, 'Invalid Explorer move', undefined, parsed.error.flatten())
@@ -601,7 +607,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
         let movedDirectories = 0
         let movedModules = 0
         await withTransaction(async connection => {
-            await lockProject(connection, projectId, expectedRevision)
+            await lockProject(connection, projectId, expectedDraftVersion)
             await lockServer(connection, projectId, serverId)
             const [directories] = await connection.query<DirectoryRow[]>(
                 'SELECT * FROM server_directories WHERE server_id = ? AND project_id = ? FOR UPDATE',
@@ -725,7 +731,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
             movedEntries,
             movedDirectories,
             movedModules,
-            draftRevision: expectedRevision + 1
+            draftVersion: expectedDraftVersion + 1
         }
     })
 
@@ -734,7 +740,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
     }, async request => {
         requireCsrf(request)
         const { projectId, serverId } = request.params as { projectId: string, serverId: string }
-        const expectedRevision = getRevision(request)
+        const expectedDraftVersion = getDraftVersion(request)
         const parsed = explorerDeleteSchema.safeParse(request.body)
         if (!parsed.success) {
             throw new HttpError(400, 'Invalid Explorer deletion', undefined, parsed.error.flatten())
@@ -742,7 +748,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
         let deletedDirectories = 0
         let deletedModules = 0
         await withTransaction(async connection => {
-            await lockProject(connection, projectId, expectedRevision)
+            await lockProject(connection, projectId, expectedDraftVersion)
             await lockServer(connection, projectId, serverId)
             const [directories] = await connection.query<DirectoryRow[]>(
                 'SELECT * FROM server_directories WHERE server_id = ? AND project_id = ? FOR UPDATE',
@@ -787,7 +793,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
                 after: { deletedDirectories, deletedModules }
             })
         })
-        return { deleted: true, deletedDirectories, deletedModules, draftRevision: expectedRevision + 1 }
+        return { deleted: true, deletedDirectories, deletedModules, draftVersion: expectedDraftVersion + 1 }
     })
 
     app.patch('/api/v1/projects/:projectId/servers/:serverId/modules/:moduleRecordId', {
@@ -799,13 +805,13 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
             serverId: string
             moduleRecordId: string
         }
-        const expectedRevision = getRevision(request)
+        const expectedDraftVersion = getDraftVersion(request)
         const parsed = modulePatchSchema.safeParse(request.body)
         if (!parsed.success) {
             throw new HttpError(400, 'Invalid module update', undefined, parsed.error.flatten())
         }
         await withTransaction(async connection => {
-            await lockProject(connection, projectId, expectedRevision)
+            await lockProject(connection, projectId, expectedDraftVersion)
             await lockServer(connection, projectId, serverId)
             const [rows] = await connection.query<ModuleRow[]>(
                 `SELECT m.*, u.original_name, u.size, u.md5, u.sha256
@@ -874,7 +880,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
                 after: { ...parsed.data, fileName, relativePath, optionalMode }
             })
         })
-        return { updated: true, draftRevision: expectedRevision + 1 }
+        return { updated: true, draftVersion: expectedDraftVersion + 1 }
     })
 
     app.post('/api/v1/projects/:projectId/servers/:serverId/modules/:moduleRecordId/replace', {
@@ -886,13 +892,13 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
             serverId: string
             moduleRecordId: string
         }
-        const expectedRevision = getRevision(request)
+        const expectedDraftVersion = getDraftVersion(request)
         const parsed = moduleReplaceSchema.safeParse(request.body)
         if (!parsed.success) {
             throw new HttpError(400, 'Invalid replacement', undefined, parsed.error.flatten())
         }
         await withTransaction(async connection => {
-            await lockProject(connection, projectId, expectedRevision)
+            await lockProject(connection, projectId, expectedDraftVersion)
             await lockServer(connection, projectId, serverId)
             const [rows] = await connection.query<ModuleRow[]>(
                 `SELECT m.*, u.original_name, u.size, u.md5, u.sha256
@@ -956,6 +962,6 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
                 }
             })
         })
-        return { updated: true, draftRevision: expectedRevision + 1 }
+        return { updated: true, draftVersion: expectedDraftVersion + 1 }
     })
 }

@@ -113,7 +113,7 @@ function checksumMutation(validateChecksum: boolean): InjectOptions {
         method: 'PATCH',
         url: '/api/v1/projects/project-1/servers/server-1/modules/module-1',
         headers: { 'x-csrf-token': 'csrf-token' },
-        payload: { revision: 3, validateChecksum }
+        payload: { draftVersion: 3, validateChecksum }
     }
 }
 
@@ -177,7 +177,7 @@ describe('module checksum validation route', () => {
 })
 
 describe('Explorer batch mutations', () => {
-    it('moves a directory subtree in one revision', async () => {
+    it('moves a directory subtree in one draft version', async () => {
         const directories = [directoryRow('directory-config', 'config'), directoryRow('directory-target', 'resourcepacks')]
         const modules = [explorerModule('module-options', 'File', 'config/options.txt')]
         mocks.query.mockImplementation(async (sql: string) => {
@@ -194,7 +194,7 @@ describe('Explorer batch mutations', () => {
             url: '/api/v1/projects/project-1/servers/server-1/explorer/move',
             headers: { 'x-csrf-token': 'csrf-token' },
             payload: {
-                revision: 3,
+                draftVersion: 3,
                 entries: [{ kind: 'directory', id: 'directory-config' }],
                 destinationPath: 'resourcepacks'
             }
@@ -205,7 +205,7 @@ describe('Explorer batch mutations', () => {
             movedEntries: 1,
             movedDirectories: 1,
             movedModules: 1,
-            draftRevision: 4
+            draftVersion: 4
         })
         expect(mocks.execute).toHaveBeenCalledWith(expect.stringContaining('UPDATE server_directories'), [
             'resourcepacks/config', expect.any(String), 'directory-config'
@@ -237,7 +237,7 @@ describe('Explorer batch mutations', () => {
             url: '/api/v1/projects/project-1/servers/server-1/explorer/move',
             headers: { 'x-csrf-token': 'csrf-token' },
             payload: {
-                revision: 3,
+                draftVersion: 3,
                 entries: [{ kind: 'directory', id: 'directory-config' }],
                 destinationPath: 'resourcepacks'
             }
@@ -249,7 +249,7 @@ describe('Explorer batch mutations', () => {
         expect(mocks.writeAudit).not.toHaveBeenCalled()
     })
 
-    it('deduplicates descendants and deletes mixed selections in one revision', async () => {
+    it('deduplicates descendants and deletes mixed selections in one draft version', async () => {
         const directories = [directoryRow('directory-config', 'config'), directoryRow('directory-client', 'config/client')]
         const modules = [
             explorerModule('module-options', 'File', 'config/options.txt'),
@@ -269,7 +269,7 @@ describe('Explorer batch mutations', () => {
             url: '/api/v1/projects/project-1/servers/server-1/explorer/delete',
             headers: { 'x-csrf-token': 'csrf-token' },
             payload: {
-                revision: 3,
+                draftVersion: 3,
                 recursive: true,
                 entries: [
                     { kind: 'directory', id: 'directory-config' },
@@ -281,7 +281,7 @@ describe('Explorer batch mutations', () => {
         })
 
         expect(response.statusCode).toBe(200)
-        expect(response.json()).toMatchObject({ deletedDirectories: 2, deletedModules: 2, draftRevision: 4 })
+        expect(response.json()).toMatchObject({ deletedDirectories: 2, deletedModules: 2, draftVersion: 4 })
         expect(mocks.execute.mock.calls.filter(([sql]) => String(sql).includes('DELETE FROM modules'))).toHaveLength(2)
         expect(mocks.execute.mock.calls.filter(([sql]) => String(sql).includes('DELETE FROM server_directories'))).toHaveLength(2)
         expect(mocks.execute.mock.calls.filter(([sql]) => String(sql).includes('UPDATE projects'))).toHaveLength(1)

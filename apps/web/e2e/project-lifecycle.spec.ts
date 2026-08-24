@@ -18,7 +18,8 @@ interface MockProject {
     description: string
     rss: string
     discord: null
-    draftRevision: number
+    draftVersion: number
+    releaseRevision: null
     activeReleaseId: null
     launcherUrl: string
     disabled: boolean
@@ -42,7 +43,8 @@ function project(id: string, name: string, deletion: MockDeletion | null = null)
         description: '',
         rss: '',
         discord: null,
-        draftRevision: 7,
+        draftVersion: 7,
+        releaseRevision: null,
         activeReleaseId: null,
         launcherUrl: `https://cdn.example.com/${id}/distribution.json`,
         disabled: true,
@@ -137,7 +139,7 @@ test('administrator can restore a disabled distribution', async ({ page }) => {
     const card = page.locator('.disabled-project-card').filter({ hasText: 'Restore Me' })
     await card.getByRole('button', { name: 'Restore' }).click()
 
-    await expect.poll(() => lifecycle.restoreBodies).toEqual([{ revision: 7 }])
+    await expect.poll(() => lifecycle.restoreBodies).toEqual([{ draftVersion: 7 }])
     await expect(card).toHaveCount(0)
     await expect(page.locator('.project-card').getByRole('heading', { name: 'Restore Me' })).toBeVisible()
 })
@@ -154,7 +156,7 @@ test('permanent deletion requires the exact name and disappears after background
 
     await card.getByRole('button', { name: 'Permanently delete' }).click()
 
-    await expect.poll(() => lifecycle.purgeBodies).toEqual([{ revision: 7, confirmationName: 'Purge Me' }])
+    await expect.poll(() => lifecycle.purgeBodies).toEqual([{ draftVersion: 7, confirmationName: 'Purge Me' }])
     await expect(card.getByText('Deletion queued')).toBeVisible()
     await expect(card.getByRole('button', { name: 'Restore' })).toHaveCount(0)
     await expect(card).toHaveCount(0, { timeout: 7000 })
@@ -170,7 +172,7 @@ test('failed permanent deletion can only be retried', async ({ page }) => {
     await expect(card.getByRole('button', { name: 'Restore' })).toHaveCount(0)
     await card.getByRole('button', { name: 'Retry permanent deletion' }).click()
 
-    await expect.poll(() => lifecycle.retryBodies).toEqual([{ revision: 7 }])
+    await expect.poll(() => lifecycle.retryBodies).toEqual([{ draftVersion: 7 }])
     await expect(card.getByText('Deletion queued')).toBeVisible()
 })
 

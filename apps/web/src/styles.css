@@ -231,11 +231,17 @@ input:disabled { opacity: .6; }
 .explorer-address input { width: min(310px, 35%); margin-left: auto; padding: 8px 10px; }
 .explorer-body { min-height: 505px; display: grid; grid-template-columns: 228px minmax(0, 1fr); }
 .explorer-tree { padding: 10px 8px; border-right: 1px solid var(--line); background: #0d141f; overflow: auto; }
-.explorer-tree button { width: 100%; min-height: 34px; display: flex; align-items: center; gap: 8px; padding: 6px 10px; border: 0; border-radius: 3px; background: transparent; color: #c4cedf; text-align: left; font-size: 12px; }
-.explorer-tree button:hover, .explorer-tree button.active { background: #1c293c; color: #fff; }
-.explorer-tree button.active { box-shadow: inset 2px 0 var(--cyan); }
-.tree-icon { width: 14px; color: var(--cyan); }
-.tree-child { color: var(--muted) !important; }
+.explorer-tree-row { min-width: 0; min-height: 34px; display: flex; align-items: stretch; }
+.explorer-tree-row button { min-height: 34px; border: 0; border-radius: 3px; background: transparent; font-size: 12px; }
+.tree-toggle, .tree-toggle-spacer { flex: 0 0 26px; width: 26px; }
+.tree-toggle { display: grid; place-content: center; padding: 0; color: var(--cyan); }
+.tree-toggle:hover { background: #1c293c; color: #fff; }
+.tree-toggle-spacer { display: block; }
+.tree-open { min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; padding: 6px; color: #c4cedf; text-align: left; }
+.tree-open:hover, .tree-open.active { background: #1c293c; color: #fff; }
+.tree-open.active { box-shadow: inset 2px 0 var(--cyan); }
+.tree-icon { flex: 0 0 14px; width: 14px; color: var(--cyan); }
+.tree-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree-warning, .warning-dot { display: inline-grid; place-content: center; width: 16px; height: 16px; margin-left: auto; border-radius: 50%; background: #533d21; color: var(--warning); font: 700 10px 'DM Mono', monospace; }
 .explorer-main { position: relative; min-width: 0; background: #0d131d; }
 .explorer-main.drag-active { box-shadow: inset 0 0 0 2px var(--cyan); }

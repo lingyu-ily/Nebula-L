@@ -7,7 +7,8 @@ const project = {
     description: '',
     rss: '',
     discord: null,
-    draftRevision: 7,
+    draftVersion: 7,
+    releaseRevision: null,
     activeReleaseId: null,
     launcherUrl: 'https://cdn.example.com/ordered-distribution/distribution.json',
     stableDistributionReady: false,
@@ -64,7 +65,7 @@ async function mockProject(page: Page, options: {
     const role = options.role ?? 'EDITOR'
     const orderUpdates: unknown[] = []
     const serverCreates: unknown[] = []
-    let revision = project.draftRevision
+    let draftVersion = project.draftVersion
     let orderedServers = [...servers]
     await page.addInitScript(() => localStorage.setItem('i18nextLng', 'en'))
     await page.route('**/api/v1/**', async route => {
@@ -76,7 +77,7 @@ async function mockProject(page: Page, options: {
                 csrfToken: 'csrf-token'
             })
         } else if (path === '/api/v1/projects/project-1' && request.method() === 'GET') {
-            await fulfillJson(route, { project: { ...project, draftRevision: revision }, servers: orderedServers })
+            await fulfillJson(route, { project: { ...project, draftVersion }, servers: orderedServers })
         } else if (path === '/api/v1/projects/project-1/servers/order' && request.method() === 'PUT') {
             const body = request.postDataJSON() as { serverIds: string[] }
             orderUpdates.push(body)
@@ -93,11 +94,11 @@ async function mockProject(page: Page, options: {
                 const server = byId.get(id)
                 return server ? [{ ...server, sortOrder }] : []
             })
-            revision += 1
-            await fulfillJson(route, { updated: true, draftRevision: revision })
+            draftVersion += 1
+            await fulfillJson(route, { updated: true, draftVersion })
         } else if (path === '/api/v1/projects/project-1/servers' && request.method() === 'POST') {
             serverCreates.push(request.postDataJSON())
-            await fulfillJson(route, { id: '68fc3c94-96c3-4b03-87d2-46f85e661aae', draftRevision: revision + 1 })
+            await fulfillJson(route, { id: '68fc3c94-96c3-4b03-87d2-46f85e661aae', draftVersion: draftVersion + 1 })
         } else if (path === '/api/v1/version-catalog/minecraft') {
             await fulfillJson(route, { versions: [], stale: false })
         } else if (path.endsWith('/jobs') || path.endsWith('/releases')) {
@@ -126,7 +127,7 @@ test('lets an editor reorder repeatedly and save one normalized ID list', async 
     await saveOrder.click()
     await expect.poll(() => orderUpdates).toHaveLength(1)
     expect(orderUpdates[0]).toEqual({
-        revision: 7,
+        draftVersion: 7,
         serverIds: [servers[2].id, servers[0].id, servers[1].id]
     })
     await expect(saveOrder).toBeDisabled()
@@ -149,7 +150,7 @@ test('gives admins the ordering controls and keeps auditors read only', async ({
     }
 })
 
-test('preserves the pending screen order when the revision conflicts', async ({ page }) => {
+test('preserves the pending screen order when the draft version conflicts', async ({ page }) => {
     await mockProject(page, { rejectOrder: true })
     await page.goto('/projects/project-1')
 
@@ -172,5 +173,5 @@ test('hides the numeric order field and appends a manually created server', asyn
     await page.getByRole('button', { name: 'Save' }).click()
 
     await expect.poll(() => serverCreates).toHaveLength(1)
-    expect(serverCreates[0]).toMatchObject({ revision: 7, serverKey: 'delta', sortOrder: 10 })
+    expect(serverCreates[0]).toMatchObject({ draftVersion: 7, serverKey: 'delta', sortOrder: 10 })
 })

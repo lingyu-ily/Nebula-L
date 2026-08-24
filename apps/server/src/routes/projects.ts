@@ -38,6 +38,8 @@ interface ProjectRow extends RowDataPacket {
     rss: string
     discord: unknown
     draft_revision: number
+    release_revision: number
+    active_release_revision?: number | null
     active_release_id: string | null
     disabled: number
     disabled_at: Date | null
@@ -117,7 +119,8 @@ function mapProject(row: ProjectRow): Record<string, unknown> {
         description: row.description,
         rss: row.rss,
         discord: row.discord,
-        draftRevision: Number(row.draft_revision),
+        draftVersion: Number(row.draft_revision),
+        releaseRevision: row.active_release_revision == null ? null : Number(row.active_release_revision),
         activeReleaseId: row.active_release_id,
         disabled: Boolean(row.disabled),
         disabledAt: row.disabled_at,
@@ -236,21 +239,21 @@ async function assertFixedDestinationAvailable(
     }
 }
 
-function getRevision(request: FastifyRequest): number {
-    const revision = Number((request.body as Record<string, unknown> | undefined)?.revision)
-    if (!Number.isInteger(revision) || revision < 0) {
-        throw new HttpError(400, 'Revision required', 'Mutation body must contain the current project revision')
+function getDraftVersion(request: FastifyRequest): number {
+    const draftVersion = Number((request.body as Record<string, unknown> | undefined)?.draftVersion)
+    if (!Number.isInteger(draftVersion) || draftVersion < 0) {
+        throw new HttpError(400, 'Draft version required', 'Mutation body must contain the current project draft version')
     }
-    return revision
+    return draftVersion
 }
 
-async function lockProject(connection: PoolConnection, projectId: string, expectedRevision: number): Promise<ProjectRow> {
+async function lockProject(connection: PoolConnection, projectId: string, expectedDraftVersion: number): Promise<ProjectRow> {
     const [rows] = await connection.query<ProjectRow[]>('SELECT * FROM projects WHERE id = ? FOR UPDATE', [projectId])
     const project = rows[0]
     if (!project || project.disabled) {
         throw new HttpError(404, 'Project not found')
     }
-    if (Number(project.draft_revision) !== expectedRevision) {
+    if (Number(project.draft_revision) !== expectedDraftVersion) {
         throw new HttpError(409, 'Draft changed', 'Reload the project before saving')
     }
     return project
@@ -277,13 +280,13 @@ async function replaceUntrackedRules(
     }
 }
 
-async function lockDisabledProject(connection: PoolConnection, projectId: string, expectedRevision: number): Promise<ProjectRow> {
+async function lockDisabledProject(connection: PoolConnection, projectId: string, expectedDraftVersion: number): Promise<ProjectRow> {
     const [rows] = await connection.query<ProjectRow[]>('SELECT * FROM projects WHERE id = ? FOR UPDATE', [projectId])
     const project = rows[0]
     if (!project?.disabled) {
         throw new HttpError(404, 'Disabled distribution not found')
     }
-    if (Number(project.draft_revision) !== expectedRevision) {
+    if (Number(project.draft_revision) !== expectedDraftVersion) {
         throw new HttpError(409, 'Draft changed', 'Reload the distribution before continuing')
     }
     return project
@@ -376,13 +379,19 @@ async function assertLauncherVideo(
 
 export async function registerProjectRoutes(app: FastifyInstance): Promise<void> {
     app.get('/api/v1/projects', { preHandler: requireRole('ADMIN', 'EDITOR', 'AUDITOR') }, async () => {
-        const [rows] = await getPool().query<ProjectRow[]>('SELECT * FROM projects WHERE disabled = FALSE ORDER BY name')
+        const [rows] = await getPool().query<ProjectRow[]>(
+            `SELECT p.*, active.release_revision AS active_release_revision
+             FROM projects p
+             LEFT JOIN releases active ON active.id = p.active_release_id
+             WHERE p.disabled = FALSE ORDER BY p.name`
+        )
         return { items: rows.map(mapProject) }
     })
 
     app.get('/api/v1/projects/disabled', { preHandler: requireRole('ADMIN') }, async () => {
         const [rows] = await getPool().query<DisabledProjectRow[]>(
             `SELECT p.*,
+                    active.release_revision AS active_release_revision,
                     d.id AS deletion_id,
                     d.status AS deletion_status,
                     d.attempts AS deletion_attempts,
@@ -390,6 +399,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                     d.error_text AS deletion_error,
                     d.created_at AS deletion_requested_at
              FROM projects p
+             LEFT JOIN releases active ON active.id = p.active_release_id
              LEFT JOIN project_deletion_tasks d ON d.project_id = p.id
              WHERE p.disabled = TRUE
              ORDER BY p.disabled_at DESC, p.name, p.id`
@@ -411,7 +421,13 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
 
     app.get('/api/v1/projects/:projectId', { preHandler: requireRole('ADMIN', 'EDITOR', 'AUDITOR') }, async request => {
         const { projectId } = request.params as { projectId: string }
-        const [projectRows] = await getPool().execute<ProjectRow[]>('SELECT * FROM projects WHERE id = ? AND disabled = FALSE', [projectId])
+        const [projectRows] = await getPool().execute<ProjectRow[]>(
+            `SELECT p.*, active.release_revision AS active_release_revision
+             FROM projects p
+             LEFT JOIN releases active ON active.id = p.active_release_id
+             WHERE p.id = ? AND p.disabled = FALSE`,
+            [projectId]
+        )
         const project = projectRows[0]
         if (!project) {
             throw new HttpError(404, 'Project not found')
@@ -478,19 +494,19 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
             }
             throw error
         }
-        return reply.status(201).send({ id, draftRevision: 0 })
+        return reply.status(201).send({ id, draftVersion: 0 })
     })
 
     app.put('/api/v1/projects/:projectId', { preHandler: requireRole('ADMIN', 'EDITOR') }, async request => {
         requireCsrf(request)
         const { projectId } = request.params as { projectId: string }
-        const expectedRevision = getRevision(request)
+        const expectedDraftVersion = getDraftVersion(request)
         const parsed = projectInputSchema.safeParse(request.body)
         if (!parsed.success) {
             throw new HttpError(400, 'Invalid project', undefined, parsed.error.flatten())
         }
         await withTransaction(async connection => {
-            const before = await lockProject(connection, projectId, expectedRevision)
+            const before = await lockProject(connection, projectId, expectedDraftVersion)
             if (before.active_release_id && before.slug !== parsed.data.slug) {
                 throw new HttpError(409, 'Published slug is immutable')
             }
@@ -508,15 +524,15 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                 after: parsed.data
             })
         })
-        return { updated: true, draftRevision: expectedRevision + 1 }
+        return { updated: true, draftVersion: expectedDraftVersion + 1 }
     })
 
     app.delete('/api/v1/projects/:projectId', { preHandler: requireRole('ADMIN') }, async request => {
         requireCsrf(request)
         const { projectId } = request.params as { projectId: string }
-        const expectedRevision = getRevision(request)
+        const expectedDraftVersion = getDraftVersion(request)
         await withTransaction(async connection => {
-            const before = await lockProject(connection, projectId, expectedRevision)
+            const before = await lockProject(connection, projectId, expectedDraftVersion)
             await connection.execute(
                 'UPDATE projects SET disabled = TRUE, disabled_at = UTC_TIMESTAMP(3), updated_at = UTC_TIMESTAMP(3) WHERE id = ?',
                 [projectId]
@@ -536,9 +552,9 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
     app.post('/api/v1/projects/:projectId/restore', { preHandler: requireRole('ADMIN') }, async request => {
         requireCsrf(request)
         const { projectId } = request.params as { projectId: string }
-        const expectedRevision = getRevision(request)
+        const expectedDraftVersion = getDraftVersion(request)
         await withTransaction(async connection => {
-            const before = await lockDisabledProject(connection, projectId, expectedRevision)
+            const before = await lockDisabledProject(connection, projectId, expectedDraftVersion)
             const [deletions] = await connection.query<(RowDataPacket & { id: string })[]>(
                 'SELECT id FROM project_deletion_tasks WHERE project_id = ? FOR UPDATE',
                 [projectId]
@@ -565,14 +581,14 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
     app.post('/api/v1/projects/:projectId/purge', { preHandler: requireRole('ADMIN') }, async (request, reply) => {
         requireCsrf(request)
         const { projectId } = request.params as { projectId: string }
-        const expectedRevision = getRevision(request)
+        const expectedDraftVersion = getDraftVersion(request)
         const confirmationName = (request.body as Record<string, unknown> | undefined)?.confirmationName
         if (typeof confirmationName !== 'string' || !confirmationName) {
             throw new HttpError(400, 'Distribution name confirmation required')
         }
         const deletionId = randomUUID()
         await withTransaction(async connection => {
-            const project = await lockDisabledProject(connection, projectId, expectedRevision)
+            const project = await lockDisabledProject(connection, projectId, expectedDraftVersion)
             if (confirmationName !== project.name) {
                 throw new HttpError(400, 'Distribution name does not match')
             }
@@ -604,10 +620,10 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
     app.post('/api/v1/projects/:projectId/purge/retry', { preHandler: requireRole('ADMIN') }, async (request, reply) => {
         requireCsrf(request)
         const { projectId } = request.params as { projectId: string }
-        const expectedRevision = getRevision(request)
+        const expectedDraftVersion = getDraftVersion(request)
         let deletionId = ''
         await withTransaction(async connection => {
-            await lockDisabledProject(connection, projectId, expectedRevision)
+            await lockDisabledProject(connection, projectId, expectedDraftVersion)
             const [rows] = await connection.query<(RowDataPacket & { id: string, status: string })[]>(
                 'SELECT id, status FROM project_deletion_tasks WHERE project_id = ? FOR UPDATE',
                 [projectId]
@@ -641,7 +657,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
     app.post('/api/v1/projects/:projectId/servers', { preHandler: requireRole('ADMIN', 'EDITOR') }, async (request, reply) => {
         requireCsrf(request)
         const { projectId } = request.params as { projectId: string }
-        const expectedRevision = getRevision(request)
+        const expectedDraftVersion = getDraftVersion(request)
         const parsed = serverInputSchema.safeParse(request.body)
         if (!parsed.success) {
             throw new HttpError(400, 'Invalid server', undefined, parsed.error.flatten())
@@ -649,7 +665,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
         const id = randomUUID()
         try {
             await withTransaction(async connection => {
-                await lockProject(connection, projectId, expectedRevision)
+                await lockProject(connection, projectId, expectedDraftVersion)
                 const [serverOrder] = await connection.query<(RowDataPacket & { next_order: number })[]>(
                     'SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order FROM servers WHERE project_id = ?',
                     [projectId]
@@ -689,19 +705,19 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
             }
             throw error
         }
-        return reply.status(201).send({ id, draftRevision: expectedRevision + 1 })
+        return reply.status(201).send({ id, draftVersion: expectedDraftVersion + 1 })
     })
 
     app.put('/api/v1/projects/:projectId/servers/order', { preHandler: requireRole('ADMIN', 'EDITOR') }, async request => {
         requireCsrf(request)
         const { projectId } = request.params as { projectId: string }
-        const expectedRevision = getRevision(request)
+        const expectedDraftVersion = getDraftVersion(request)
         const parsed = serverOrderInputSchema.safeParse(request.body)
         if (!parsed.success) {
             throw new HttpError(400, 'Invalid server order', undefined, parsed.error.flatten())
         }
         await withTransaction(async connection => {
-            await lockProject(connection, projectId, expectedRevision)
+            await lockProject(connection, projectId, expectedDraftVersion)
             const [serverRows] = await connection.query<(RowDataPacket & { id: string })[]>(
                 'SELECT id FROM servers WHERE project_id = ? ORDER BY sort_order, name, id FOR UPDATE',
                 [projectId]
@@ -731,19 +747,19 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                 after: { serverIds: parsed.data.serverIds }
             })
         })
-        return { updated: true, draftRevision: expectedRevision + 1 }
+        return { updated: true, draftVersion: expectedDraftVersion + 1 }
     })
 
     app.put('/api/v1/projects/:projectId/servers/:serverId', { preHandler: requireRole('ADMIN', 'EDITOR') }, async request => {
         requireCsrf(request)
         const { projectId, serverId } = request.params as { projectId: string, serverId: string }
-        const expectedRevision = getRevision(request)
+        const expectedDraftVersion = getDraftVersion(request)
         const parsed = serverInputSchema.safeParse(request.body)
         if (!parsed.success) {
             throw new HttpError(400, 'Invalid server', undefined, parsed.error.flatten())
         }
         await withTransaction(async connection => {
-            await lockProject(connection, projectId, expectedRevision)
+            await lockProject(connection, projectId, expectedDraftVersion)
             const [beforeRows] = await connection.query<ServerRow[]>(
                 'SELECT * FROM servers WHERE id = ? AND project_id = ? FOR UPDATE',
                 [serverId, projectId]
@@ -781,7 +797,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                 after: parsed.data
             })
         })
-        return { updated: true, draftRevision: expectedRevision + 1 }
+        return { updated: true, draftVersion: expectedDraftVersion + 1 }
     })
 
     app.patch('/api/v1/projects/:projectId/servers/:serverId/launcher-ui', {
@@ -789,13 +805,13 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
     }, async request => {
         requireCsrf(request)
         const { projectId, serverId } = request.params as { projectId: string, serverId: string }
-        const expectedRevision = getRevision(request)
+        const expectedDraftVersion = getDraftVersion(request)
         const parsed = launcherUiInputSchema.safeParse(request.body)
         if (!parsed.success) {
             throw new HttpError(400, 'Invalid launcher UI', undefined, parsed.error.flatten())
         }
         await withTransaction(async connection => {
-            await lockProject(connection, projectId, expectedRevision)
+            await lockProject(connection, projectId, expectedDraftVersion)
             const [beforeRows] = await connection.query<ServerRow[]>(
                 'SELECT * FROM servers WHERE id = ? AND project_id = ? FOR UPDATE',
                 [serverId, projectId]
@@ -840,15 +856,15 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                 after: parsed.data
             })
         })
-        return { updated: true, draftRevision: expectedRevision + 1 }
+        return { updated: true, draftVersion: expectedDraftVersion + 1 }
     })
 
     app.delete('/api/v1/projects/:projectId/servers/:serverId', { preHandler: requireRole('ADMIN', 'EDITOR') }, async request => {
         requireCsrf(request)
         const { projectId, serverId } = request.params as { projectId: string, serverId: string }
-        const expectedRevision = getRevision(request)
+        const expectedDraftVersion = getDraftVersion(request)
         await withTransaction(async connection => {
-            await lockProject(connection, projectId, expectedRevision)
+            await lockProject(connection, projectId, expectedDraftVersion)
             const [beforeRows] = await connection.query<ServerRow[]>(
                 'SELECT * FROM servers WHERE id = ? AND project_id = ? FOR UPDATE',
                 [serverId, projectId]
@@ -867,20 +883,20 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                 before: mapServer(before)
             })
         })
-        return { deleted: true, draftRevision: expectedRevision + 1 }
+        return { deleted: true, draftVersion: expectedDraftVersion + 1 }
     })
 
     app.post('/api/v1/projects/:projectId/servers/:serverId/modules', { preHandler: requireRole('ADMIN', 'EDITOR') }, async (request, reply) => {
         requireCsrf(request)
         const { projectId, serverId } = request.params as { projectId: string, serverId: string }
-        const expectedRevision = getRevision(request)
+        const expectedDraftVersion = getDraftVersion(request)
         const parsed = moduleInputSchema.safeParse(request.body)
         if (!parsed.success) {
             throw new HttpError(400, 'Invalid module', undefined, parsed.error.flatten())
         }
         const id = randomUUID()
         await withTransaction(async connection => {
-            await lockProject(connection, projectId, expectedRevision)
+            await lockProject(connection, projectId, expectedDraftVersion)
             const [serverRows] = await connection.query<ServerRow[]>(
                 'SELECT * FROM servers WHERE id = ? AND project_id = ? FOR UPDATE',
                 [serverId, projectId]
@@ -935,19 +951,19 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                 after: { ...parsed.data, fileName, relativePath }
             })
         })
-        return reply.status(201).send({ id, draftRevision: expectedRevision + 1 })
+        return reply.status(201).send({ id, draftVersion: expectedDraftVersion + 1 })
     })
 
     app.put('/api/v1/projects/:projectId/servers/:serverId/modules/:moduleId', { preHandler: requireRole('ADMIN', 'EDITOR') }, async request => {
         requireCsrf(request)
         const { projectId, serverId, moduleId } = request.params as { projectId: string, serverId: string, moduleId: string }
-        const expectedRevision = getRevision(request)
+        const expectedDraftVersion = getDraftVersion(request)
         const parsed = moduleInputSchema.safeParse(request.body)
         if (!parsed.success) {
             throw new HttpError(400, 'Invalid module', undefined, parsed.error.flatten())
         }
         await withTransaction(async connection => {
-            await lockProject(connection, projectId, expectedRevision)
+            await lockProject(connection, projectId, expectedDraftVersion)
             const [beforeRows] = await connection.query<ModuleRow[]>(
                 'SELECT * FROM modules WHERE id = ? AND server_id = ? AND project_id = ? FOR UPDATE',
                 [moduleId, serverId, projectId]
@@ -1004,15 +1020,15 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                 after: { ...parsed.data, fileName, relativePath }
             })
         })
-        return { updated: true, draftRevision: expectedRevision + 1 }
+        return { updated: true, draftVersion: expectedDraftVersion + 1 }
     })
 
     app.delete('/api/v1/projects/:projectId/servers/:serverId/modules/:moduleId', { preHandler: requireRole('ADMIN', 'EDITOR') }, async request => {
         requireCsrf(request)
         const { projectId, serverId, moduleId } = request.params as { projectId: string, serverId: string, moduleId: string }
-        const expectedRevision = getRevision(request)
+        const expectedDraftVersion = getDraftVersion(request)
         await withTransaction(async connection => {
-            await lockProject(connection, projectId, expectedRevision)
+            await lockProject(connection, projectId, expectedDraftVersion)
             const [beforeRows] = await connection.query<ModuleRow[]>(
                 'SELECT * FROM modules WHERE id = ? AND server_id = ? AND project_id = ? FOR UPDATE',
                 [moduleId, serverId, projectId]
@@ -1034,6 +1050,6 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                 before: mapModule(before)
             })
         })
-        return { deleted: true, draftRevision: expectedRevision + 1 }
+        return { deleted: true, draftVersion: expectedDraftVersion + 1 }
     })
 }

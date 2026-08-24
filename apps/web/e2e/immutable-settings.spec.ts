@@ -7,7 +7,8 @@ const project = {
     description: '',
     rss: '',
     discord: null,
-    draftRevision: 3,
+    draftVersion: 3,
+    releaseRevision: 3,
     activeReleaseId: 'release-1',
     launcherUrl: 'https://cdn.example.com/published-distribution/distribution.json',
     stableDistributionReady: true,
@@ -61,12 +62,12 @@ async function mockPublishedSettings(page: Page): Promise<{
             await fulfillJson(route, { project, servers: [server] })
         } else if (path === '/api/v1/projects/project-1' && request.method() === 'PUT') {
             projectUpdates.push(request.postDataJSON())
-            await fulfillJson(route, { updated: true, draftRevision: 4 })
+            await fulfillJson(route, { updated: true, draftVersion: 4 })
         } else if (path === '/api/v1/projects/project-1/servers/server-1' && request.method() === 'GET') {
             await fulfillJson(route, { project, server, directories: [] })
         } else if (path === '/api/v1/projects/project-1/servers/server-1' && request.method() === 'PUT') {
             serverUpdates.push(request.postDataJSON())
-            await fulfillJson(route, { updated: true, draftRevision: 4 })
+            await fulfillJson(route, { updated: true, draftVersion: 4 })
         } else if (path === '/api/v1/version-catalog/minecraft') {
             await fulfillJson(route, { versions: [], stale: false })
         } else if (path.endsWith('/jobs') || path.endsWith('/releases')) {
@@ -88,8 +89,9 @@ test('keeps the published distribution slug when saving other settings', async (
     await settingsForm.getByRole('button', { name: 'Save' }).click()
 
     await expect.poll(() => projectUpdates).toHaveLength(1)
+    await expect(page.locator('header.project-header')).toContainText('Revision 3')
     expect(projectUpdates[0]).toMatchObject({
-        revision: 3,
+        draftVersion: 3,
         name: 'Updated Distribution',
         slug: 'published-distribution'
     })
@@ -105,8 +107,9 @@ test('keeps the published server ID when saving other settings', async ({ page }
     await settingsForm.getByRole('button', { name: 'Save' }).click()
 
     await expect.poll(() => serverUpdates).toHaveLength(1)
+    await expect(page.getByText('Revision 3', { exact: true })).toBeVisible()
     expect(serverUpdates[0]).toMatchObject({
-        revision: 3,
+        draftVersion: 3,
         name: 'Updated Server',
         serverKey: 'published-server'
     })

@@ -15,7 +15,8 @@ const project = {
     description: '',
     rss: '',
     discord: null,
-    draftRevision: 3,
+    draftVersion: 3,
+    releaseRevision: null,
     activeReleaseId: null,
     disabled: false
 }
@@ -67,7 +68,7 @@ const server = {
 async function mockExplorer(
     page: Page,
     role: 'EDITOR' | 'AUDITOR' = 'EDITOR',
-    options: { failChecksumUpdate?: boolean } = {}
+    options: { failChecksumUpdate?: boolean, nestedDirectories?: boolean } = {}
 ): Promise<unknown[]> {
     const mutations: unknown[] = []
     const managedProject = { ...project }
@@ -105,6 +106,24 @@ async function mockExplorer(
         createdAt: '2026-01-01T00:00:00Z',
         updatedAt: '2026-01-01T00:00:00Z'
     }]
+    if (options.nestedDirectories) {
+        directories.push({
+            id: 'directory-3',
+            path: 'config/client',
+            createdAt: '2026-01-01T00:00:00Z',
+            updatedAt: '2026-01-01T00:00:00Z'
+        }, {
+            id: 'directory-4',
+            path: 'config/client/gui',
+            createdAt: '2026-01-01T00:00:00Z',
+            updatedAt: '2026-01-01T00:00:00Z'
+        }, {
+            id: 'directory-5',
+            path: 'resourcepacks/hd',
+            createdAt: '2026-01-01T00:00:00Z',
+            updatedAt: '2026-01-01T00:00:00Z'
+        })
+    }
     await page.addInitScript(() => localStorage.setItem('i18nextLng', 'en'))
     await page.route('**/api/v1/**', async route => {
         const request = route.request()
@@ -123,12 +142,12 @@ async function mockExplorer(
         } else if (url.pathname === '/api/v1/projects/project-1/servers/server-1' && request.method() === 'GET') {
             await fulfillJson(route, { project: managedProject, server: managedServer, directories })
         } else if (url.pathname.endsWith('/modules/module-1') && request.method() === 'PATCH') {
-            const body = request.postDataJSON() as { revision: number, validateChecksum?: boolean }
+            const body = request.postDataJSON() as { draftVersion: number, validateChecksum?: boolean }
             mutations.push(body)
             if (options.failChecksumUpdate) {
                 await fulfillJson(route, {
-                    title: 'Revision conflict',
-                    detail: 'Draft revision changed',
+                    title: 'Draft version conflict',
+                    detail: 'Draft version changed',
                     status: 409
                 }, 409)
                 return
@@ -137,8 +156,8 @@ async function mockExplorer(
             if (module && typeof body.validateChecksum === 'boolean') {
                 module.validateChecksum = body.validateChecksum
             }
-            managedProject.draftRevision = body.revision + 1
-            await fulfillJson(route, { updated: true, draftRevision: managedProject.draftRevision })
+            managedProject.draftVersion = body.draftVersion + 1
+            await fulfillJson(route, { updated: true, draftVersion: managedProject.draftVersion })
         } else if (url.pathname.endsWith('/modules/module-1/download') && request.method() === 'GET') {
             await route.fulfill({
                 status: 200,
@@ -159,15 +178,15 @@ async function mockExplorer(
                 body: 'PK mock zip'
             })
         } else if (url.pathname.endsWith('/explorer/move') && request.method() === 'POST') {
-            const body = request.postDataJSON() as { revision: number }
+            const body = request.postDataJSON() as { draftVersion: number }
             mutations.push(body)
-            managedProject.draftRevision = body.revision + 1
-            await fulfillJson(route, { updated: true, movedEntries: 2, draftRevision: managedProject.draftRevision })
+            managedProject.draftVersion = body.draftVersion + 1
+            await fulfillJson(route, { updated: true, movedEntries: 2, draftVersion: managedProject.draftVersion })
         } else if (url.pathname.endsWith('/explorer/delete') && request.method() === 'POST') {
-            const body = request.postDataJSON() as { revision: number }
+            const body = request.postDataJSON() as { draftVersion: number }
             mutations.push(body)
-            managedProject.draftRevision = body.revision + 1
-            await fulfillJson(route, { deleted: true, deletedDirectories: 2, deletedModules: 1, draftRevision: managedProject.draftRevision })
+            managedProject.draftVersion = body.draftVersion + 1
+            await fulfillJson(route, { deleted: true, deletedDirectories: 2, deletedModules: 1, draftVersion: managedProject.draftVersion })
         } else if (url.pathname.endsWith('/directories') && request.method() === 'POST') {
             const body = request.postDataJSON() as { path: string }
             mutations.push(body)
@@ -177,7 +196,7 @@ async function mockExplorer(
                 createdAt: '2026-01-01T00:00:00Z',
                 updatedAt: '2026-01-01T00:00:00Z'
             })
-            await fulfillJson(route, { id: directories.at(-1)?.id, path: body.path, draftRevision: 4 }, 201)
+            await fulfillJson(route, { id: directories.at(-1)?.id, path: body.path, draftVersion: 4 }, 201)
         } else {
             await fulfillJson(route, { title: 'Not Found', status: 404 }, 404)
         }
@@ -236,7 +255,7 @@ async function mockExplorerUploads(page: Page, options: UploadMockOptions = {}):
         } else if (url.pathname.endsWith('/directories') && request.method() === 'POST') {
             const body = request.postDataJSON() as Record<string, unknown>
             state.directoryBodies.push(body)
-            detailProject.draftRevision = Number(body.revision) + 1
+            detailProject.draftVersion = Number(body.draftVersion) + 1
             detailDirectories.push({
                 id: `directory-${detailDirectories.length + 1}`,
                 path: String(body.path),
@@ -246,7 +265,7 @@ async function mockExplorerUploads(page: Page, options: UploadMockOptions = {}):
             await fulfillJson(route, {
                 id: detailDirectories.at(-1)?.id,
                 path: body.path,
-                draftRevision: detailProject.draftRevision
+                draftVersion: detailProject.draftVersion
             }, 201)
         } else if (url.pathname === '/api/v1/projects/project-1/uploads' && request.method() === 'POST') {
             if (state.uploadIds.length === 0) await firstUploadGate
@@ -264,10 +283,10 @@ async function mockExplorerUploads(page: Page, options: UploadMockOptions = {}):
                 }, 409)
                 return
             }
-            detailProject.draftRevision = Number(body.revision) + 1
+            detailProject.draftVersion = Number(body.draftVersion) + 1
             await fulfillJson(route, {
                 id: `module-${state.moduleBodies.length + 1}`,
-                draftRevision: detailProject.draftRevision
+                draftVersion: detailProject.draftVersion
             }, 201)
         } else if (/^\/api\/v1\/projects\/project-1\/uploads\/[^/]+$/.test(url.pathname) && request.method() === 'DELETE') {
             state.deletedUploadIds.push(url.pathname.split('/').at(-1) ?? '')
@@ -278,6 +297,44 @@ async function mockExplorerUploads(page: Page, options: UploadMockOptions = {}):
     })
     return state
 }
+
+test('expands and collapses the folder tree independently from navigation', async ({ page }) => {
+    await mockExplorer(page, 'EDITOR', { nestedDirectories: true })
+    await page.goto('/projects/project-1/servers/server-1/files')
+
+    const tree = page.getByRole('complementary', { name: 'Folder navigation' })
+    await expect(tree.getByRole('button', { name: 'Files', exact: true })).toBeVisible()
+    await expect(tree.getByRole('button', { name: 'config', exact: true })).toHaveCount(0)
+    await expect(tree.getByRole('button', { name: 'Expand Libraries folder', exact: true })).toHaveCount(0)
+
+    await tree.getByRole('button', { name: 'Collapse Main Server folder', exact: true }).click()
+    await expect(tree.getByRole('button', { name: 'Files', exact: true })).toHaveCount(0)
+    await expect(page.locator('.explorer-table').getByRole('row', { name: /Files Folder/ })).toBeVisible()
+
+    await tree.getByRole('button', { name: 'Expand Main Server folder', exact: true }).click()
+    await tree.getByRole('button', { name: 'Expand Files folder', exact: true }).click()
+    await expect(tree.getByRole('button', { name: 'config', exact: true })).toBeVisible()
+    await expect(tree.getByRole('button', { name: 'client', exact: true })).toHaveCount(0)
+    await tree.getByRole('button', { name: 'Collapse Files folder', exact: true }).click()
+    await expect(tree.getByRole('button', { name: 'config', exact: true })).toHaveCount(0)
+    await expect(page.locator('.explorer-table').getByRole('row', { name: /Files Folder/ })).toBeVisible()
+
+    await tree.getByRole('button', { name: 'Files', exact: true }).click()
+    await expect(tree.getByRole('button', { name: 'config', exact: true })).toBeVisible()
+    await tree.getByRole('button', { name: 'config', exact: true }).click()
+    await expect(tree.getByRole('button', { name: 'client', exact: true })).toBeVisible()
+    await expect(tree.getByRole('button', { name: 'Files', exact: true })).not.toHaveAttribute('aria-current', 'page')
+    await expect(tree.getByRole('button', { name: 'config', exact: true })).toHaveAttribute('aria-current', 'page')
+
+    await tree.getByRole('button', { name: 'Files', exact: true }).click()
+    await tree.getByRole('button', { name: 'Expand resourcepacks folder', exact: true }).click()
+    await expect(tree.getByRole('button', { name: 'hd', exact: true })).toBeVisible()
+    await expect(tree.getByRole('button', { name: 'client', exact: true })).toBeVisible()
+
+    await page.reload()
+    await expect(tree.getByRole('button', { name: 'Files', exact: true })).toBeVisible()
+    await expect(tree.getByRole('button', { name: 'config', exact: true })).toHaveCount(0)
+})
 
 test('opens a server-specific Explorer page and creates a real folder', async ({ page }) => {
     const mutations = await mockExplorer(page)
@@ -290,7 +347,7 @@ test('opens a server-specific Explorer page and creates a real folder', async ({
     page.once('dialog', dialog => dialog.accept('resourcepacks'))
     await page.getByRole('button', { name: 'New folder' }).click()
     await expect.poll(() => mutations).toContainEqual(expect.objectContaining({
-        revision: 3,
+        draftVersion: 3,
         path: 'resourcepacks'
     }))
 })
@@ -313,19 +370,20 @@ test('selects multiple Explorer entries for atomic move and delete actions', asy
     page.once('dialog', dialog => dialog.accept('archive'))
     await page.getByRole('button', { name: 'Move' }).click()
     await expect.poll(() => mutations).toContainEqual(expect.objectContaining({
-        revision: 3,
+        draftVersion: 3,
         destinationPath: 'archive',
         entries: [
             { kind: 'directory', id: 'directory-1' },
             { kind: 'directory', id: 'directory-2' }
         ]
     }))
+    await expect(page.getByText('2 of 2 selected')).toHaveCount(0)
 
     await page.getByRole('checkbox', { name: 'Select all visible items' }).check()
     page.once('dialog', dialog => dialog.accept())
     await page.getByRole('button', { name: 'Delete' }).click()
     await expect.poll(() => mutations).toContainEqual(expect.objectContaining({
-        revision: 4,
+        draftVersion: 4,
         recursive: true,
         entries: [
             { kind: 'directory', id: 'directory-1' },
@@ -376,6 +434,7 @@ test('keeps the Explorer available but read-only for auditors', async ({ page })
     ])
     expect(download.suggestedFilename()).toBe('options.txt')
 
+    await page.locator('.explorer-tree').getByRole('button', { name: /Forge Mods$/ }).click()
     await page.locator('.explorer-tree').getByRole('button', { name: /Required$/ }).click()
     await page.locator('.explorer-table').getByRole('row', { name: /manual\.jar/ }).click()
     await expect(page.getByText('Always on')).toBeVisible()
@@ -385,6 +444,7 @@ test('keeps the Explorer available but read-only for auditors', async ({ page })
 test('updates checksum validation for a File module', async ({ page }) => {
     const mutations = await mockExplorer(page)
     await page.goto('/projects/project-1/servers/server-1/files')
+    await page.locator('.explorer-tree').getByRole('button', { name: /Files$/ }).click()
     await page.locator('.explorer-tree').getByRole('button', { name: /config$/ }).click()
 
     const validationSwitch = page.getByRole('switch', { name: 'Validate options.txt' })
@@ -392,25 +452,26 @@ test('updates checksum validation for a File module', async ({ page }) => {
     await validationSwitch.click()
 
     await expect.poll(() => mutations).toContainEqual(expect.objectContaining({
-        revision: 3,
+        draftVersion: 3,
         validateChecksum: false
     }))
     await expect(validationSwitch).not.toBeChecked()
 })
 
-test('keeps checksum validation unchanged when the revision conflicts', async ({ page }) => {
+test('keeps checksum validation unchanged when the draft version conflicts', async ({ page }) => {
     await mockExplorer(page, 'EDITOR', { failChecksumUpdate: true })
     await page.goto('/projects/project-1/servers/server-1/files')
+    await page.locator('.explorer-tree').getByRole('button', { name: /Files$/ }).click()
     await page.locator('.explorer-tree').getByRole('button', { name: /config$/ }).click()
 
     const validationSwitch = page.getByRole('switch', { name: 'Validate options.txt' })
     await validationSwitch.click()
 
-    await expect(page.getByRole('alert')).toContainText('Draft revision changed')
+    await expect(page.getByRole('alert')).toContainText('Draft version changed')
     await expect(validationSwitch).toBeChecked()
 })
 
-test('uploads multiple selected files sequentially with the returned revisions', async ({ page }) => {
+test('uploads multiple selected files sequentially with the returned draft versions', async ({ page }) => {
     const state = await mockExplorerUploads(page)
     await page.goto('/projects/project-1/servers/server-1/files')
     await page.locator('.explorer-tree').getByRole('button', { name: /Files$/ }).click()
@@ -424,7 +485,7 @@ test('uploads multiple selected files sequentially with the returned revisions',
     expect(state.uploadIds).toEqual(['upload-1', 'upload-2'])
     expect(state.moduleBodies).toEqual([
         expect.objectContaining({
-            revision: 3,
+            draftVersion: 3,
             uploadId: 'upload-1',
             type: 'File',
             displayName: 'first.txt',
@@ -434,7 +495,7 @@ test('uploads multiple selected files sequentially with the returned revisions',
             sortOrder: 1
         }),
         expect.objectContaining({
-            revision: 4,
+            draftVersion: 4,
             uploadId: 'upload-2',
             type: 'File',
             displayName: 'second.txt',

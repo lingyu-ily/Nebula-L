@@ -8,7 +8,8 @@ const projectDetail = {
         description: '',
         rss: '',
         discord: null,
-        draftRevision: 1,
+        draftVersion: 1,
+        releaseRevision: null,
         activeReleaseId: null,
         disabled: false
     },
@@ -27,6 +28,14 @@ interface MockState {
     savedServers: unknown[]
     loaderRequests: string[]
 }
+
+test('shows unpublished status without exposing the draft version', async ({ page }) => {
+    await mockProjectPage(page)
+    await page.goto('/projects/project-1')
+
+    await expect(page.getByText('Not published', { exact: true })).toBeVisible()
+    await expect(page.getByText('Revision 1', { exact: true })).toHaveCount(0)
+})
 
 async function mockProjectPage(page: Page, catalogAvailable = true): Promise<MockState> {
     const savedServers: unknown[] = []
@@ -89,7 +98,7 @@ async function mockProjectPage(page: Page, catalogAvailable = true): Promise<Moc
             }
         } else if (url.pathname === '/api/v1/projects/project-1/servers' && request.method() === 'POST') {
             savedServers.push(request.postDataJSON())
-            await fulfillJson(route, { id: 'server-1', draftRevision: 2 }, 201)
+            await fulfillJson(route, { id: 'server-1', draftVersion: 2 }, 201)
         } else {
             await fulfillJson(route, { title: 'Not Found', status: 404 }, 404)
         }
