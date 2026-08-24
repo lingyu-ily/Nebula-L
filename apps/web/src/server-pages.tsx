@@ -5,18 +5,22 @@ import {
     useState,
     type DragEvent,
     type FormEvent,
+    type MouseEvent as ReactMouseEvent,
     type ReactNode
 } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import type {
     ApiUser,
+    ExplorerEntryRef,
     LoaderCatalogResponse,
     MinecraftCatalogResponse,
     VersionCatalogLoader
 } from '@nebula/shared'
+import { isSafeRelativePath } from '@nebula/shared'
 import {
     api,
+    apiResponse,
     jsonBody,
     type ManagedModule,
     type ManagedServer,
@@ -25,28 +29,26 @@ import {
     type ServerDetail,
     type ServerDirectory
 } from './api.js'
+import { collectDroppedTree, hasDroppedDirectory, type UploadBatchFile } from './explorer-drop.js'
 import { Link, NavLink, Navigate, useNavigate, useParams } from './router.js'
 
 type OptionalMode = ManagedModule['optionalMode']
 type ModuleType = ManagedModule['type']
 type ExplorerSort = 'name' | 'type' | 'size' | 'updated'
 interface UploadProgress {
+    phase: 'folders' | 'files'
     completed: number
     total: number
     currentFile: string
 }
 
-function errorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error)
+interface UploadSuccess {
+    files: number
+    folders: number
 }
 
-function containsDroppedDirectory(items: DataTransferItemList): boolean {
-    return Array.from(items).some(item => {
-        const entry = (item as DataTransferItem & {
-            webkitGetAsEntry?: () => { isDirectory: boolean } | null
-        }).webkitGetAsEntry?.()
-        return entry?.isDirectory === true
-    })
+function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error)
 }
 
 function ErrorNotice({ error }: { error: unknown }): ReactNode {
@@ -1193,13 +1195,16 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
     const [search, setSearch] = useState('')
     const [sortBy, setSortBy] = useState<ExplorerSort>('name')
     const [direction, setDirection] = useState<'asc' | 'desc'>('asc')
-    const [selectedKey, setSelectedKey] = useState('')
+    const [selectedKeys, setSelectedKeys] = useState<Set<string>>(() => new Set())
     const [dragActive, setDragActive] = useState(false)
+    const [dropReading, setDropReading] = useState(false)
     const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null)
-    const [uploadSuccess, setUploadSuccess] = useState<number | null>(null)
+    const [uploadSuccess, setUploadSuccess] = useState<UploadSuccess | null>(null)
     const [uploadInputError, setUploadInputError] = useState<string | null>(null)
     const uploadInput = useRef<HTMLInputElement>(null)
     const replaceInput = useRef<HTMLInputElement>(null)
+    const selectAllInput = useRef<HTMLInputElement>(null)
+    const selectionAnchor = useRef('')
     const entries = useMemo(
         () => sortEntries(currentEntries(detail, currentPath, search, {
             files: t('regularFiles'),
@@ -1212,23 +1217,50 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
         }), sortBy, direction),
         [currentPath, detail, direction, search, sortBy, t]
     )
-    const selected = entries.find(entry => `${entry.kind}:${entry.id}` === selectedKey)
+    const selectableEntries = useMemo(() => entries.filter(entry => entry.kind !== 'system'), [entries])
+    const selectableKeys = useMemo(
+        () => selectableEntries.map(entry => `${entry.kind}:${entry.id}`),
+        [selectableEntries]
+    )
+    const selectableKeySignature = selectableKeys.join('\n')
+    const selectedEntries = selectableEntries.filter(entry => selectedKeys.has(`${entry.kind}:${entry.id}`))
+    const selected = selectedEntries.length === 1 ? selectedEntries[0] : undefined
+    const allSelected = selectableKeys.length > 0 && selectableKeys.every(key => selectedKeys.has(key))
     const target = uploadTarget(currentPath, detail.server)
     const action = useMutation({
         mutationFn: (operation: () => Promise<unknown>) => operation(),
         onSuccess: () => {
-            setSelectedKey('')
+            setSelectedKeys(new Set())
+            selectionAnchor.current = ''
         },
         onSettled: () => {
             invalidateServer(queryClient, detail.project.id, detail.server.id)
         }
     })
+    const downloadAction = useMutation({
+        mutationFn: (operation: () => Promise<void>) => operation()
+    })
     useEffect(() => {
-        setSelectedKey('')
+        setSelectedKeys(new Set())
+        selectionAnchor.current = ''
         setDragActive(false)
         setUploadSuccess(null)
         setUploadInputError(null)
     }, [currentPath])
+    useEffect(() => {
+        const visibleKeys = new Set(selectableKeys)
+        setSelectedKeys(current => {
+            const next = new Set([...current].filter(key => visibleKeys.has(key)))
+            return next.size === current.size ? current : next
+        })
+        if (selectionAnchor.current && !visibleKeys.has(selectionAnchor.current)) {
+            selectionAnchor.current = ''
+        }
+    }, [selectableKeySignature])
+    useEffect(() => {
+        if (!selectAllInput.current) return
+        selectAllInput.current.indeterminate = selectedEntries.length > 0 && !allSelected
+    }, [allSelected, selectedEntries.length])
     useEffect(() => {
         if (uploadSuccess == null) return
         const timer = window.setTimeout(() => setUploadSuccess(null), 5000)
@@ -1256,31 +1288,99 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
             }
         ))
     }
-    const handleUploads = (files: File[]): void => {
-        if (!target || files.length === 0 || action.isPending) return
+    const handleUploadBatch = (files: UploadBatchFile[], directories: string[]): void => {
+        if (!target || files.length === 0 && directories.length === 0 || action.isPending) return
         const batchTarget = target
-        const total = files.length
+        const pathKey = (path: string): string => path.normalize('NFC').toLowerCase()
+        const relativeBase = batchTarget.type === 'File' ? batchTarget.relativeDirectory : ''
+        const resolvedDirectories = [...new Set(directories.map(path =>
+            relativeBase ? `${relativeBase}/${path}` : path
+        ))].sort((left, right) => left.split('/').length - right.split('/').length || left.localeCompare(right))
+        const resolvedFiles = files.map(value => ({
+            file: value.file,
+            relativePath: batchTarget.type === 'File'
+                ? (relativeBase ? `${relativeBase}/${value.relativePath}` : value.relativePath)
+                : value.file.name
+        })).sort((left, right) => left.relativePath.localeCompare(right.relativePath))
+        if (resolvedDirectories.some(path => !isSafeRelativePath(path))
+            || resolvedFiles.some(value => batchTarget.type === 'File' && !isSafeRelativePath(value.relativePath))) {
+            setUploadInputError(t('uploadInvalidPath'))
+            return
+        }
+        if (batchTarget.type !== 'File' && directories.length > 0) {
+            setUploadInputError(t('uploadFoldersFilesOnly'))
+            return
+        }
+        const existingDirectories = new Set(detail.directories.map(directory => pathKey(directory.path)))
+        const existingFiles = new Set(detail.server.modules
+            .filter(module => module.type === 'File' && module.relativePath)
+            .map(module => pathKey(module.relativePath!)))
+        const incomingDirectories = new Set<string>()
+        for (const path of resolvedDirectories) {
+            const key = pathKey(path)
+            if (existingFiles.has(key)) {
+                setUploadInputError(t('uploadPathConflict', { path }))
+                return
+            }
+            incomingDirectories.add(key)
+        }
+        const incomingFiles = new Set<string>()
+        for (const value of resolvedFiles) {
+            const key = pathKey(value.relativePath)
+            if (incomingFiles.has(key)
+                || batchTarget.type === 'File'
+                    && (existingFiles.has(key) || existingDirectories.has(key) || incomingDirectories.has(key))) {
+                setUploadInputError(t('uploadPathConflict', { path: value.relativePath }))
+                return
+            }
+            incomingFiles.add(key)
+        }
+        const directoriesToCreate = resolvedDirectories.filter(path => !existingDirectories.has(pathKey(path)))
+        const total = resolvedFiles.length
         setUploadSuccess(null)
         setUploadInputError(null)
         action.mutate(async () => {
             let completed = 0
+            let createdFolders = 0
             let revision = detail.project.draftRevision
             try {
-                for (const file of files) {
-                    setUploadProgress({ completed, total, currentFile: file.name })
+                for (const path of directoriesToCreate) {
+                    setUploadProgress({
+                        phase: 'folders',
+                        completed: createdFolders,
+                        total: directoriesToCreate.length,
+                        currentFile: path
+                    })
+                    const created = await api<{ draftRevision: number }>(
+                        `/api/v1/projects/${detail.project.id}/servers/${detail.server.id}/directories`,
+                        {
+                            method: 'POST',
+                            ...jsonBody({ revision, path })
+                        }
+                    )
+                    revision = created.draftRevision
+                    createdFolders += 1
+                }
+                for (const value of resolvedFiles) {
+                    setUploadProgress({
+                        phase: 'files',
+                        completed,
+                        total,
+                        currentFile: value.relativePath
+                    })
                     let stored: { id: string }
                     try {
-                        stored = await upload(file)
+                        stored = await upload(value.file)
                     } catch (error) {
                         throw new Error(t('uploadBatchFailed', {
                             completed,
                             total,
-                            fileName: file.name,
+                            fileName: value.relativePath,
                             reason: errorMessage(error)
                         }))
                     }
                     const relativePath = batchTarget.type === 'File'
-                        ? (batchTarget.relativeDirectory ? `${batchTarget.relativeDirectory}/${file.name}` : file.name)
+                        ? value.relativePath
                         : null
                     try {
                         const created = await api<{ id: string, draftRevision: number }>(
@@ -1291,8 +1391,8 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
                                     revision,
                                     uploadId: stored.id,
                                     type: batchTarget.type,
-                                    displayName: file.name,
-                                    fileName: file.name,
+                                    displayName: value.file.name,
+                                    fileName: value.file.name,
                                     relativePath,
                                     optionalMode: batchTarget.optionalMode,
                                     sortOrder: detail.server.modules.length + completed
@@ -1307,27 +1407,31 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
                         throw new Error(t('uploadBatchFailed', {
                             completed,
                             total,
-                            fileName: file.name,
+                            fileName: value.relativePath,
                             reason: errorMessage(error)
                         }))
                     }
                     completed += 1
                 }
-                setUploadSuccess(completed)
-                return { uploaded: completed }
+                setUploadSuccess({ files: completed, folders: createdFolders })
+                return { uploaded: completed, createdFolders }
             } finally {
                 setUploadProgress(null)
             }
         })
     }
+    const handleUploads = (files: File[]): void => handleUploadBatch(
+        files.map(file => ({ file, relativePath: file.name })),
+        []
+    )
     const handleDragEnter = (event: DragEvent<HTMLDivElement>): void => {
-        if (!canEdit || !target || action.isPending) return
+        if (!canEdit || !target || action.isPending || dropReading) return
         event.preventDefault()
         setDragActive(true)
     }
     const handleDragOver = (event: DragEvent<HTMLDivElement>): void => {
         event.preventDefault()
-        if (!canEdit || !target || action.isPending) return
+        if (!canEdit || !target || action.isPending || dropReading) return
         event.dataTransfer.dropEffect = 'copy'
         setDragActive(true)
     }
@@ -1339,19 +1443,71 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
     const handleDrop = (event: DragEvent<HTMLDivElement>): void => {
         event.preventDefault()
         setDragActive(false)
-        if (!canEdit || action.isPending) return
+        if (!canEdit || action.isPending || dropReading) return
         if (!target) {
             setUploadInputError(t('uploadUnavailableHere'))
             return
         }
-        if (containsDroppedDirectory(event.dataTransfer.items)) {
-            setUploadInputError(t('uploadDirectoriesUnsupported'))
+        const containsDirectory = hasDroppedDirectory(event.dataTransfer.items)
+        if (containsDirectory && !(currentPath === 'files' || currentPath.startsWith('files/'))) {
+            setUploadInputError(t('uploadFoldersFilesOnly'))
             return
         }
-        handleUploads(Array.from(event.dataTransfer.files))
+        if (!containsDirectory) {
+            const files = Array.from(event.dataTransfer.files)
+            if (files.length === 0 && event.dataTransfer.items.length > 0) {
+                setUploadInputError(t('uploadDirectoryApiUnsupported'))
+                return
+            }
+            handleUploads(files)
+            return
+        }
+        setDropReading(true)
+        void collectDroppedTree(event.dataTransfer.items).then(tree => {
+            setDropReading(false)
+            if (!tree) {
+                setUploadInputError(t('uploadDirectoryApiUnsupported'))
+                return
+            }
+            handleUploadBatch(tree.files, tree.directories)
+        }).catch(error => {
+            setDropReading(false)
+            setUploadInputError(errorMessage(error))
+        })
+    }
+    const selectedRefs = (): ExplorerEntryRef[] => selectedEntries.map(entry => ({
+        kind: entry.kind,
+        id: entry.id
+    }))
+    const selectEntry = (event: ReactMouseEvent, key: string, fromCheckbox = false): void => {
+        const anchorIndex = selectableKeys.indexOf(selectionAnchor.current)
+        const currentIndex = selectableKeys.indexOf(key)
+        if (event.shiftKey && anchorIndex >= 0 && currentIndex >= 0) {
+            const start = Math.min(anchorIndex, currentIndex)
+            const end = Math.max(anchorIndex, currentIndex)
+            setSelectedKeys(current => {
+                const next = event.ctrlKey || event.metaKey ? new Set(current) : new Set<string>()
+                selectableKeys.slice(start, end + 1).forEach(value => next.add(value))
+                return next
+            })
+        } else if (fromCheckbox || event.ctrlKey || event.metaKey) {
+            setSelectedKeys(current => {
+                const next = new Set(current)
+                if (next.has(key)) next.delete(key)
+                else next.add(key)
+                return next
+            })
+        } else {
+            setSelectedKeys(new Set([key]))
+        }
+        selectionAnchor.current = key
+    }
+    const toggleAll = (): void => {
+        setSelectedKeys(allSelected ? new Set() : new Set(selectableKeys))
+        selectionAnchor.current = allSelected ? '' : selectableKeys.at(-1) ?? ''
     }
     const rename = (): void => {
-        if (!selected || selected.kind === 'system') return
+        if (!selected) return
         const name = window.prompt(t('renamePrompt'), selected.name)
         if (!name || name === selected.name) return
         if (selected.kind === 'directory') {
@@ -1373,26 +1529,24 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
         }))
     }
     const move = (): void => {
-        if (!selected || selected.kind === 'system') return
-        if (selected.kind === 'module' && selected.module.type !== 'File') return
+        if (selectedEntries.length === 0 || selectedEntries.some(entry =>
+            entry.kind === 'module' && entry.module.type !== 'File'
+        )) return
         const destination = window.prompt(t('moveDestinationPrompt'), '')
         if (destination == null) return
+        setUploadInputError(null)
         const normalizedDestination = destination.replace(/^\/+|\/+$/g, '')
-        const path = normalizedDestination ? `${normalizedDestination}/${selected.name}` : selected.name
-        if (selected.kind === 'directory') {
-            action.mutate(() => api(
-                `/api/v1/projects/${detail.project.id}/servers/${detail.server.id}/directories/${selected.id}`,
-                {
-                    method: 'PATCH',
-                    ...jsonBody({ revision: detail.project.draftRevision, path })
-                }
-            ))
-        } else {
-            action.mutate(() => api(moduleUrl(selected.id), {
-                method: 'PATCH',
-                ...jsonBody({ revision: detail.project.draftRevision, relativePath: path })
-            }))
-        }
+        action.mutate(() => api(
+            `/api/v1/projects/${detail.project.id}/servers/${detail.server.id}/explorer/move`,
+            {
+                method: 'POST',
+                ...jsonBody({
+                    revision: detail.project.draftRevision,
+                    entries: selectedRefs(),
+                    destinationPath: normalizedDestination
+                })
+            }
+        ))
     }
     const edit = (): void => {
         if (selected?.kind !== 'module') return
@@ -1421,29 +1575,42 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
         }))
     }
     const remove = (): void => {
-        if (!selected || selected.kind === 'system') return
-        if (selected.kind === 'directory') {
-            const directoryCount = detail.directories.filter(directory => pathInside(directory.path, selected.directory.path)).length
-            const moduleCount = detail.server.modules.filter(module =>
-                module.type === 'File'
-                && module.relativePath != null
-                && pathInside(module.relativePath, selected.directory.path)
-            ).length
-            if (!window.confirm(t('confirmDeleteFolder', { directoryCount, moduleCount }))) return
-            action.mutate(() => api(
-                `/api/v1/projects/${detail.project.id}/servers/${detail.server.id}/directories/${selected.id}`,
-                {
-                    method: 'DELETE',
-                    ...jsonBody({ revision: detail.project.draftRevision, recursive: true })
-                }
-            ))
-            return
-        }
-        if (!window.confirm(t('confirmDelete'))) return
-        action.mutate(() => api(moduleUrl(selected.id), {
-            method: 'DELETE',
-            ...jsonBody({ revision: detail.project.draftRevision })
-        }))
+        if (selectedEntries.length === 0) return
+        const selectedDirectories = selectedEntries
+            .filter((entry): entry is DirectoryEntry => entry.kind === 'directory')
+            .map(entry => entry.directory)
+        const directoryRoots = selectedDirectories.filter(directory => !selectedDirectories.some(other =>
+            other.id !== directory.id && pathInside(directory.path, other.path)
+        ))
+        const directoryIds = new Set(detail.directories
+            .filter(directory => directoryRoots.some(root => pathInside(directory.path, root.path)))
+            .map(directory => directory.id))
+        const moduleIds = new Set(selectedEntries
+            .filter((entry): entry is ModuleEntry => entry.kind === 'module')
+            .map(entry => entry.id))
+        detail.server.modules.forEach(module => {
+            if (module.type === 'File' && module.relativePath
+                && directoryRoots.some(root => pathInside(module.relativePath!, root.path))) {
+                moduleIds.add(module.id)
+            }
+        })
+        if (!window.confirm(t('confirmDeleteSelection', {
+            selectedCount: selectedEntries.length,
+            directoryCount: directoryIds.size,
+            moduleCount: moduleIds.size
+        }))) return
+        setUploadInputError(null)
+        action.mutate(() => api(
+            `/api/v1/projects/${detail.project.id}/servers/${detail.server.id}/explorer/delete`,
+            {
+                method: 'POST',
+                ...jsonBody({
+                    revision: detail.project.draftRevision,
+                    entries: selectedRefs(),
+                    recursive: true
+                })
+            }
+        ))
     }
     const replace = (file: File): void => {
         if (selected?.kind !== 'module') return
@@ -1456,22 +1623,46 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
         })
     }
     const download = (): void => {
-        if (selected?.kind !== 'module' || !selected.module.uploadId || selected.module.needsManualFile) return
-        const link = document.createElement('a')
-        link.href = `${moduleUrl(selected.id)}/download`
-        document.body.append(link)
-        link.click()
-        link.remove()
+        if (selectedEntries.length === 0) return
+        setUploadInputError(null)
+        if (selected?.kind === 'module' && selected.module.uploadId && !selected.module.needsManualFile) {
+            const link = document.createElement('a')
+            link.href = `${moduleUrl(selected.id)}/download`
+            document.body.append(link)
+            link.click()
+            link.remove()
+            return
+        }
+        downloadAction.mutate(async () => {
+            const response = await apiResponse(
+                `/api/v1/projects/${detail.project.id}/servers/${detail.server.id}/explorer/download`,
+                { method: 'POST', ...jsonBody({ entries: selectedRefs() }) }
+            )
+            const blob = await response.blob()
+            const url = URL.createObjectURL(blob)
+            const link = document.createElement('a')
+            link.href = url
+            link.download = `${detail.server.serverKey}-selection.zip`
+            document.body.append(link)
+            link.click()
+            link.remove()
+            window.setTimeout(() => URL.revokeObjectURL(url), 0)
+        })
     }
     const open = (entry: ExplorerEntry): void => {
         if (entry.kind !== 'module') setCurrentPath(entry.path)
     }
+    const canMoveSelection = selectedEntries.length > 0 && selectedEntries.every(entry =>
+        entry.kind === 'directory' || entry.module.type === 'File'
+    )
+    const singleDownloadUnavailable = selected?.kind === 'module'
+        && (!selected.module.uploadId || selected.module.needsManualFile)
     const breadcrumbs = currentPath ? currentPath.split('/') : []
     return <section className="explorer-card">
         <div className="explorer-toolbar">
             <button className="secondary" onClick={() => setCurrentPath(parentPath(currentPath))} disabled={!currentPath}>←</button>
             {canEdit && <button className="secondary" onClick={createFolder} disabled={!currentPath.startsWith('files')}>{t('newFolder')}</button>}
-            {canEdit && <button className="secondary" onClick={() => uploadInput.current?.click()} disabled={!target || action.isPending}>{t('upload')}</button>}
+            {canEdit && <button className="secondary" onClick={() => uploadInput.current?.click()} disabled={!target || action.isPending || dropReading}>{t('upload')}</button>}
             <input
                 ref={uploadInput}
                 className="hidden-file-input"
@@ -1483,10 +1674,10 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
                     event.target.value = ''
                 }}
             />
-            {canEdit && <button className="text-button toolbar-action" onClick={rename} disabled={!selected || selected.kind === 'system'}>{t('rename')}</button>}
-            {canEdit && <button className="text-button toolbar-action" onClick={move} disabled={!selected || selected.kind === 'system' || selected.kind === 'module' && selected.module.type !== 'File'}>{t('move')}</button>}
-            {canEdit && <button className="text-button toolbar-action" onClick={edit} disabled={selected?.kind !== 'module'}>{t('edit')}</button>}
-            {canEdit && <button className="text-button toolbar-action" onClick={() => replaceInput.current?.click()} disabled={selected?.kind !== 'module'}>{t('replace')}</button>}
+            {canEdit && <button className="text-button toolbar-action" onClick={rename} disabled={!selected || action.isPending}>{t('rename')}</button>}
+            {canEdit && <button className="text-button toolbar-action" onClick={move} disabled={!canMoveSelection || action.isPending}>{t('move')}</button>}
+            {canEdit && <button className="text-button toolbar-action" onClick={edit} disabled={selected?.kind !== 'module' || action.isPending}>{t('edit')}</button>}
+            {canEdit && <button className="text-button toolbar-action" onClick={() => replaceInput.current?.click()} disabled={selected?.kind !== 'module' || action.isPending}>{t('replace')}</button>}
             <input
                 ref={replaceInput}
                 className="hidden-file-input"
@@ -1500,9 +1691,9 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
             <button
                 className="text-button toolbar-action"
                 onClick={download}
-                disabled={selected?.kind !== 'module' || !selected.module.uploadId || selected.module.needsManualFile}
+                disabled={selectedEntries.length === 0 || singleDownloadUnavailable || downloadAction.isPending}
             >{t('download')}</button>
-            {canEdit && <button className="danger-link toolbar-action" onClick={remove} disabled={!selected || selected.kind === 'system'}>{t('delete')}</button>}
+            {canEdit && <button className="danger-link toolbar-action" onClick={remove} disabled={selectedEntries.length === 0 || action.isPending}>{t('delete')}</button>}
             <button className="text-button toolbar-action" onClick={() => invalidateServer(queryClient, detail.project.id, detail.server.id)}>{t('refresh')}</button>
         </div>
         <div className="explorer-address">
@@ -1534,11 +1725,13 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
                 onDrop={handleDrop}
-                aria-busy={uploadProgress != null}
+                aria-busy={uploadProgress != null || dropReading}
             >
-                {dragActive && <div className="explorer-drop-overlay" role="status">{t('dropFilesHere')}</div>}
+                {dragActive && <div className="explorer-drop-overlay" role="status">{t('dropFilesAndFoldersHere')}</div>}
                 <div className="explorer-view-options">
-                    <span>{entries.length} {t('items')}</span>
+                    <span>{selectedEntries.length > 0
+                        ? t('selectedItems', { selected: selectedEntries.length, total: entries.length })
+                        : `${entries.length} ${t('items')}`}</span>
                     <label>{t('sortBy')}<select value={sortBy} onChange={event => setSortBy(event.target.value as ExplorerSort)}>
                         <option value="name">{t('name')}</option>
                         <option value="type">{t('type')}</option>
@@ -1549,7 +1742,17 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
                 </div>
                 <div className="explorer-table-wrap">
                     <table className="explorer-table">
-                        <thead><tr><th>{t('name')}</th><th>{t('type')}</th><th>{t('destination')}</th><th>{t('size')}</th><th>{t('status')}</th><th>{t('checksumValidation')}</th><th>{t('updated')}</th></tr></thead>
+                        <thead><tr>
+                            <th className="explorer-selection-cell"><input
+                                ref={selectAllInput}
+                                type="checkbox"
+                                checked={allSelected}
+                                disabled={selectableKeys.length === 0}
+                                aria-label={t('selectAll')}
+                                onChange={toggleAll}
+                            /></th>
+                            <th>{t('name')}</th><th>{t('type')}</th><th>{t('destination')}</th><th>{t('size')}</th><th>{t('status')}</th><th>{t('checksumValidation')}</th><th>{t('updated')}</th>
+                        </tr></thead>
                         <tbody>
                             {entries.map(entry => {
                                 const key = `${entry.kind}:${entry.id}`
@@ -1567,11 +1770,29 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
                                         : null
                                 return <tr
                                     key={key}
-                                    className={selectedKey === key ? 'selected' : ''}
-                                    onClick={() => setSelectedKey(key)}
+                                    className={selectedKeys.has(key) ? 'selected' : ''}
+                                    aria-selected={entry.kind === 'system' ? undefined : selectedKeys.has(key)}
+                                    onClick={event => {
+                                        if (entry.kind === 'system') {
+                                            setSelectedKeys(new Set())
+                                            selectionAnchor.current = ''
+                                        } else {
+                                            selectEntry(event, key)
+                                        }
+                                    }}
                                     onDoubleClick={() => open(entry)}
                                 >
-                                    <td><span className={`explorer-entry-icon ${entry.kind}`}>{entry.kind === 'module' ? '◈' : '▰'}</span><strong>{entry.kind === 'system' && entry.warning ? `⚠ ${entry.name}` : entry.name}</strong>{module?.needsManualFile && <span className="warning-dot" title={t('waitingFile')}>!</span>}</td>
+                                    <td className="explorer-selection-cell">{entry.kind !== 'system' && <input
+                                        type="checkbox"
+                                        checked={selectedKeys.has(key)}
+                                        readOnly
+                                        aria-label={t('selectItem', { name: entry.name })}
+                                        onClick={event => {
+                                            event.stopPropagation()
+                                            selectEntry(event, key, true)
+                                        }}
+                                    />}</td>
+                                    <td className="explorer-name-cell"><span className={`explorer-entry-icon ${entry.kind}`}>{entry.kind === 'module' ? '◈' : '▰'}</span><strong>{entry.kind === 'system' && entry.warning ? `⚠ ${entry.name}` : entry.name}</strong>{module?.needsManualFile && <span className="warning-dot" title={t('waitingFile')}>!</span>}</td>
                                     <td>{type}</td>
                                     <td><code>{entry.path}</code></td>
                                     <td>{module ? displayFileSize(module.size, t('bytes')) : '—'}</td>
@@ -1603,14 +1824,16 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
                 </div>
             </div>
         </div>
-        {uploadProgress && <div className="explorer-progress" role="status" aria-live="polite">{t('uploadBatchProgress', {
+        {uploadProgress && <div className="explorer-progress" role="status" aria-live="polite">{t(uploadProgress.phase === 'folders' ? 'createFolderBatchProgress' : 'uploadBatchProgress', {
             current: uploadProgress.completed + 1,
             total: uploadProgress.total,
             fileName: uploadProgress.currentFile
         })}</div>}
-        {action.isPending && !uploadProgress && <div className="explorer-progress" role="status">{t('working')}</div>}
-        {uploadSuccess != null && <div className="explorer-upload-success" role="status">{t('uploadBatchComplete', { count: uploadSuccess })}</div>}
-        <ErrorNotice error={uploadInputError ?? action.error} />
+        {(action.isPending || dropReading || downloadAction.isPending) && !uploadProgress && <div className="explorer-progress" role="status">{t(downloadAction.isPending ? 'preparingDownload' : 'working')}</div>}
+        {uploadSuccess != null && <div className="explorer-upload-success" role="status">{uploadSuccess.folders > 0
+            ? t('uploadTreeComplete', { folderCount: uploadSuccess.folders, fileCount: uploadSuccess.files })
+            : t('uploadBatchComplete', { count: uploadSuccess.files })}</div>}
+        <ErrorNotice error={uploadInputError ?? action.error ?? downloadAction.error} />
     </section>
 }
 

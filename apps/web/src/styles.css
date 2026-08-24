@@ -248,9 +248,11 @@ input:disabled { opacity: .6; }
 .explorer-table { min-width: 900px; }
 .explorer-table th { position: sticky; top: 0; z-index: 1; background: #121a26; }
 .explorer-table td { height: 51px; padding: 10px 13px; font-size: 12px; }
-.explorer-table td:first-child { display: flex; align-items: center; gap: 9px; }
+.explorer-table th.explorer-selection-cell, .explorer-table td.explorer-selection-cell { width: 44px; padding-inline: 13px 5px; text-align: center; }
+.explorer-selection-cell input { width: 16px; height: 16px; margin: 0; accent-color: var(--cyan); }
+.explorer-table td.explorer-name-cell { display: flex; align-items: center; gap: 9px; }
 .explorer-table td code { color: var(--muted); font-size: 11px; }
-.explorer-table tbody tr { cursor: default; }
+.explorer-table tbody tr { cursor: default; user-select: none; }
 .explorer-table tbody tr:hover { background: #182233; }
 .explorer-table tbody tr.selected { background: #20314a; outline: 1px solid #436687; outline-offset: -1px; }
 .checksum-switch { position: relative; width: 34px; height: 19px; padding: 0; border: 1px solid #536176; border-radius: 999px; background: #273142; vertical-align: middle; }

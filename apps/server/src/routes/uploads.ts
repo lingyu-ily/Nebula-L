@@ -1,7 +1,10 @@
 import { randomUUID } from 'crypto'
-import { curseForgeImportSchema } from '@nebula/shared'
+import { curseForgeImportSchema, explorerDownloadSchema, isSafeRelativePath } from '@nebula/shared'
+import { ZipArchive, type ArchiverError } from 'archiver'
 import type { FastifyInstance } from 'fastify'
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise'
+import { PassThrough } from 'stream'
+import { pipeline } from 'stream/promises'
 import { writeAudit } from '../audit.js'
 import { getConfig } from '../config.js'
 import { getPool, withTransaction } from '../db/index.js'
@@ -26,6 +29,25 @@ interface ModuleDownloadRow extends UploadRow {
     module_file_name: string | null
     relative_path: string | null
     display_name: string
+}
+
+interface ExplorerDownloadDirectoryRow extends RowDataPacket {
+    id: string
+    path: string
+}
+
+interface ExplorerDownloadModuleRow extends RowDataPacket {
+    id: string
+    upload_id: string | null
+    type: 'ForgeMod' | 'FabricMod' | 'Library' | 'File'
+    file_name: string | null
+    relative_path: string | null
+    optional_mode: 'REQUIRED' | 'OPTIONAL_ON' | 'OPTIONAL_OFF'
+    display_name: string
+    needs_manual_file: number
+    original_name: string | null
+    object_key: string | null
+    upload_status: 'READY' | 'DELETED' | null
 }
 
 function parseByteRange(header: string | undefined, size: number): { start: number, end: number } | null | false {
@@ -74,6 +96,38 @@ function attachmentDisposition(fileName: string): string {
         `%${character.charCodeAt(0).toString(16).toUpperCase()}`
     )
     return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`
+}
+
+function archiveModulePath(row: ExplorerDownloadModuleRow): string {
+    let path: string
+    if (row.type === 'File') {
+        if (!row.relative_path) throw new HttpError(409, 'Module path is missing')
+        path = `files/${row.relative_path}`
+    } else {
+        const fileName = row.file_name ?? row.original_name ?? row.display_name
+        if (row.type === 'Library') {
+            path = `libraries/${fileName}`
+        } else {
+            const root = row.type === 'ForgeMod' ? 'forgemods' : 'fabricmods'
+            const folder = row.optional_mode === 'OPTIONAL_ON'
+                ? 'optionalon'
+                : row.optional_mode === 'OPTIONAL_OFF'
+                    ? 'optionaloff'
+                    : 'required'
+            path = `${root}/${folder}/${fileName}`
+        }
+    }
+    const normalized = path.normalize('NFC')
+    if (!isSafeRelativePath(normalized)) {
+        throw new HttpError(409, 'Unsafe archive path', `Cannot archive ${row.display_name}`)
+    }
+    return normalized
+}
+
+function pathInside(candidate: string, parent: string): boolean {
+    const candidateKey = candidate.normalize('NFC').toLowerCase()
+    const parentKey = parent.normalize('NFC').toLowerCase()
+    return candidateKey === parentKey || candidateKey.startsWith(`${parentKey}/`)
 }
 
 export async function registerUploadRoutes(app: FastifyInstance): Promise<void> {
@@ -181,6 +235,104 @@ export async function registerUploadRoutes(app: FastifyInstance): Promise<void> 
             reply.header('Content-Length', stored.contentLength ?? size)
         }
         return reply.send(stored.body)
+    })
+
+    app.post('/api/v1/projects/:projectId/servers/:serverId/explorer/download', {
+        preHandler: requireRole('ADMIN', 'EDITOR', 'AUDITOR')
+    }, async (request, reply) => {
+        requireCsrf(request)
+        const { projectId, serverId } = request.params as { projectId: string, serverId: string }
+        const parsed = explorerDownloadSchema.safeParse(request.body)
+        if (!parsed.success) {
+            throw new HttpError(400, 'Invalid Explorer download', undefined, parsed.error.flatten())
+        }
+        const [servers] = await getPool().execute<(RowDataPacket & { server_key: string })[]>(
+            `SELECT s.server_key FROM servers s
+             INNER JOIN projects p ON p.id = s.project_id AND p.disabled = FALSE
+             WHERE s.id = ? AND s.project_id = ?`,
+            [serverId, projectId]
+        )
+        const server = servers[0]
+        if (!server) throw new HttpError(404, 'Server not found')
+        const [directories] = await getPool().execute<ExplorerDownloadDirectoryRow[]>(
+            'SELECT id, path FROM server_directories WHERE server_id = ? AND project_id = ? ORDER BY path',
+            [serverId, projectId]
+        )
+        const [modules] = await getPool().execute<ExplorerDownloadModuleRow[]>(
+            `SELECT m.id, m.upload_id, m.type, m.file_name, m.relative_path, m.optional_mode,
+                    m.display_name, m.needs_manual_file, u.original_name, u.object_key,
+                    u.status AS upload_status
+             FROM modules m LEFT JOIN uploads u ON u.id = m.upload_id AND u.project_id = m.project_id
+             WHERE m.server_id = ? AND m.project_id = ?`,
+            [serverId, projectId]
+        )
+        const directoryById = new Map(directories.map(directory => [directory.id, directory]))
+        const moduleById = new Map(modules.map(module => [module.id, module]))
+        const selectedDirectories: ExplorerDownloadDirectoryRow[] = []
+        const selectedModuleIds = new Set<string>()
+        for (const entry of parsed.data.entries) {
+            if (entry.kind === 'directory') {
+                const directory = directoryById.get(entry.id)
+                if (!directory) throw new HttpError(404, 'Directory not found')
+                selectedDirectories.push(directory)
+            } else {
+                if (!moduleById.has(entry.id)) throw new HttpError(404, 'Module not found')
+                selectedModuleIds.add(entry.id)
+            }
+        }
+        const directoryRoots = selectedDirectories.filter(directory => !selectedDirectories.some(other =>
+            other.id !== directory.id && pathInside(directory.path, other.path)
+        ))
+        const archiveDirectories = directories.filter(directory =>
+            directoryRoots.some(root => pathInside(directory.path, root.path))
+        )
+        const archiveModules = modules.filter(module =>
+            selectedModuleIds.has(module.id)
+            || module.type === 'File'
+                && module.relative_path != null
+                && directoryRoots.some(root => pathInside(module.relative_path!, root.path))
+        )
+        const missingPaths = archiveModules
+            .filter(module => module.needs_manual_file || !module.object_key || module.upload_status !== 'READY')
+            .map(archiveModulePath)
+        if (missingPaths.length > 0) {
+            const visiblePaths = missingPaths.slice(0, 20)
+            const suffix = missingPaths.length > visiblePaths.length
+                ? ` and ${missingPaths.length - visiblePaths.length} more`
+                : ''
+            throw new HttpError(409, 'Stored files are missing', `Cannot create ZIP: ${visiblePaths.join(', ')}${suffix}`)
+        }
+        const archiveDirectoryPaths = archiveDirectories.map(directory => {
+            const path = `files/${directory.path}`.normalize('NFC')
+            if (!isSafeRelativePath(path)) {
+                throw new HttpError(409, 'Unsafe archive path', `Cannot archive ${directory.path}`)
+            }
+            return path
+        })
+        const archive = new ZipArchive({ zlib: { level: 6 } })
+        archive.on('warning', (error: ArchiverError) => archive.destroy(error))
+        for (const path of archiveDirectoryPaths) {
+            archive.append('', { name: `${path}/` })
+        }
+        const pendingModules = archiveModules.map(module => {
+            const source = new PassThrough()
+            archive.append(source, { name: archiveModulePath(module) })
+            return { module, source }
+        })
+        void (async (): Promise<void> => {
+            for (const pending of pendingModules) {
+                const stored = await getStoredObject(pending.module.object_key!)
+                await pipeline(stored.body, pending.source)
+            }
+        })().catch(error => archive.destroy(error instanceof Error ? error : new Error(String(error))))
+        reply.type('application/zip')
+        reply.header('Content-Disposition', attachmentDisposition(`${server.server_key}-selection.zip`))
+        reply.header('Cache-Control', 'private, no-store')
+        reply.header('X-Content-Type-Options', 'nosniff')
+        void archive.finalize().catch((error: unknown) =>
+            archive.destroy(error instanceof Error ? error : new Error(String(error)))
+        )
+        return reply.send(archive)
     })
 
     app.post('/api/v1/projects/:projectId/uploads', { preHandler: requireRole('ADMIN', 'EDITOR') }, async (request, reply) => {

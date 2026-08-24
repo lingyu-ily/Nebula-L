@@ -66,6 +66,28 @@ function moduleRow(type: 'File' | 'ForgeMod', validateChecksum = 1): Record<stri
     }
 }
 
+function directoryRow(id: string, path: string): Record<string, unknown> {
+    return {
+        id,
+        project_id: 'project-1',
+        server_id: 'server-1',
+        path,
+        path_hash: path,
+        created_at: new Date('2026-01-01T00:00:00Z'),
+        updated_at: new Date('2026-01-01T00:00:00Z')
+    }
+}
+
+function explorerModule(id: string, type: 'File' | 'ForgeMod', relativePath: string | null): Record<string, unknown> {
+    return {
+        ...moduleRow(type),
+        id,
+        relative_path: relativePath,
+        file_name: relativePath?.split('/').at(-1) ?? `${id}.jar`,
+        display_name: relativePath?.split('/').at(-1) ?? `${id}.jar`
+    }
+}
+
 const apps: FastifyInstance[] = []
 
 async function createApp(role: Role): Promise<FastifyInstance> {
@@ -151,5 +173,118 @@ describe('module checksum validation route', () => {
 
         expect(response.statusCode).toBe(403)
         expect(mocks.query).not.toHaveBeenCalled()
+    })
+})
+
+describe('Explorer batch mutations', () => {
+    it('moves a directory subtree in one revision', async () => {
+        const directories = [directoryRow('directory-config', 'config'), directoryRow('directory-target', 'resourcepacks')]
+        const modules = [explorerModule('module-options', 'File', 'config/options.txt')]
+        mocks.query.mockImplementation(async (sql: string) => {
+            if (sql.includes('FROM projects WHERE id = ? FOR UPDATE')) return [[project]]
+            if (sql.includes('FROM servers WHERE id = ?') && sql.includes('FOR UPDATE')) return [[server]]
+            if (sql.includes('FROM server_directories')) return [directories]
+            if (sql.includes('FROM modules m LEFT JOIN uploads')) return [modules]
+            throw new Error(`Unexpected query: ${sql}`)
+        })
+        const app = await createApp('EDITOR')
+
+        const response = await app.inject({
+            method: 'POST',
+            url: '/api/v1/projects/project-1/servers/server-1/explorer/move',
+            headers: { 'x-csrf-token': 'csrf-token' },
+            payload: {
+                revision: 3,
+                entries: [{ kind: 'directory', id: 'directory-config' }],
+                destinationPath: 'resourcepacks'
+            }
+        })
+
+        expect(response.statusCode).toBe(200)
+        expect(response.json()).toMatchObject({
+            movedEntries: 1,
+            movedDirectories: 1,
+            movedModules: 1,
+            draftRevision: 4
+        })
+        expect(mocks.execute).toHaveBeenCalledWith(expect.stringContaining('UPDATE server_directories'), [
+            'resourcepacks/config', expect.any(String), 'directory-config'
+        ])
+        expect(mocks.execute).toHaveBeenCalledWith(expect.stringContaining('UPDATE modules SET relative_path'), [
+            'resourcepacks/config/options.txt', 'options.txt', 'module-options'
+        ])
+        expect(mocks.execute.mock.calls.filter(([sql]) => String(sql).includes('UPDATE projects'))).toHaveLength(1)
+        expect(mocks.writeAudit.mock.calls[0]?.[2]).toMatchObject({ action: 'explorer.entries_moved' })
+    })
+
+    it('rejects a batch move conflict before writing any paths', async () => {
+        const directories = [
+            directoryRow('directory-config', 'config'),
+            directoryRow('directory-target', 'resourcepacks'),
+            directoryRow('directory-conflict', 'resourcepacks/config')
+        ]
+        mocks.query.mockImplementation(async (sql: string) => {
+            if (sql.includes('FROM projects WHERE id = ? FOR UPDATE')) return [[project]]
+            if (sql.includes('FROM servers WHERE id = ?') && sql.includes('FOR UPDATE')) return [[server]]
+            if (sql.includes('FROM server_directories')) return [directories]
+            if (sql.includes('FROM modules m LEFT JOIN uploads')) return [[]]
+            throw new Error(`Unexpected query: ${sql}`)
+        })
+        const app = await createApp('EDITOR')
+
+        const response = await app.inject({
+            method: 'POST',
+            url: '/api/v1/projects/project-1/servers/server-1/explorer/move',
+            headers: { 'x-csrf-token': 'csrf-token' },
+            payload: {
+                revision: 3,
+                entries: [{ kind: 'directory', id: 'directory-config' }],
+                destinationPath: 'resourcepacks'
+            }
+        })
+
+        expect(response.statusCode).toBe(409)
+        expect(response.json().detail).toContain('resourcepacks/config')
+        expect(mocks.execute).not.toHaveBeenCalled()
+        expect(mocks.writeAudit).not.toHaveBeenCalled()
+    })
+
+    it('deduplicates descendants and deletes mixed selections in one revision', async () => {
+        const directories = [directoryRow('directory-config', 'config'), directoryRow('directory-client', 'config/client')]
+        const modules = [
+            explorerModule('module-options', 'File', 'config/options.txt'),
+            explorerModule('module-forge', 'ForgeMod', null)
+        ]
+        mocks.query.mockImplementation(async (sql: string) => {
+            if (sql.includes('FROM projects WHERE id = ? FOR UPDATE')) return [[project]]
+            if (sql.includes('FROM servers WHERE id = ?') && sql.includes('FOR UPDATE')) return [[server]]
+            if (sql.includes('FROM server_directories')) return [directories]
+            if (sql.includes('FROM modules m LEFT JOIN uploads')) return [modules]
+            throw new Error(`Unexpected query: ${sql}`)
+        })
+        const app = await createApp('EDITOR')
+
+        const response = await app.inject({
+            method: 'POST',
+            url: '/api/v1/projects/project-1/servers/server-1/explorer/delete',
+            headers: { 'x-csrf-token': 'csrf-token' },
+            payload: {
+                revision: 3,
+                recursive: true,
+                entries: [
+                    { kind: 'directory', id: 'directory-config' },
+                    { kind: 'directory', id: 'directory-client' },
+                    { kind: 'module', id: 'module-options' },
+                    { kind: 'module', id: 'module-forge' }
+                ]
+            }
+        })
+
+        expect(response.statusCode).toBe(200)
+        expect(response.json()).toMatchObject({ deletedDirectories: 2, deletedModules: 2, draftRevision: 4 })
+        expect(mocks.execute.mock.calls.filter(([sql]) => String(sql).includes('DELETE FROM modules'))).toHaveLength(2)
+        expect(mocks.execute.mock.calls.filter(([sql]) => String(sql).includes('DELETE FROM server_directories'))).toHaveLength(2)
+        expect(mocks.execute.mock.calls.filter(([sql]) => String(sql).includes('UPDATE projects'))).toHaveLength(1)
+        expect(mocks.writeAudit.mock.calls[0]?.[2]).toMatchObject({ action: 'explorer.entries_deleted' })
     })
 })

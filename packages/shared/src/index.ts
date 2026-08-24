@@ -216,6 +216,41 @@ export const directoryDeleteSchema = z.object({
     recursive: z.literal(true)
 })
 
+export const explorerEntryRefSchema = z.object({
+    kind: z.enum(['directory', 'module']),
+    id: z.string().trim().min(1).max(64)
+})
+export type ExplorerEntryRef = z.infer<typeof explorerEntryRefSchema>
+
+const explorerEntriesSchema = z.array(explorerEntryRefSchema).min(1).max(500).superRefine((entries, context) => {
+    const seen = new Set<string>()
+    entries.forEach((entry, index) => {
+        const key = `${entry.kind}:${entry.id}`
+        if (seen.has(key)) {
+            context.addIssue({
+                code: 'custom',
+                path: [index],
+                message: 'Explorer entries must be unique'
+            })
+        }
+        seen.add(key)
+    })
+})
+
+export const explorerMoveSchema = z.object({
+    entries: explorerEntriesSchema,
+    destinationPath: z.union([z.literal(''), managedPathSchema])
+})
+
+export const explorerDeleteSchema = z.object({
+    entries: explorerEntriesSchema,
+    recursive: z.literal(true)
+})
+
+export const explorerDownloadSchema = z.object({
+    entries: explorerEntriesSchema
+})
+
 export const modulePatchSchema = z.object({
     displayName: z.string().trim().min(1).max(255).optional(),
     fileName: managedFileNameSchema.optional(),

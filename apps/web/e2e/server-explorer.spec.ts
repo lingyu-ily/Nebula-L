@@ -99,6 +99,11 @@ async function mockExplorer(
         path: 'config',
         createdAt: '2026-01-01T00:00:00Z',
         updatedAt: '2026-01-01T00:00:00Z'
+    }, {
+        id: 'directory-2',
+        path: 'resourcepacks',
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-01T00:00:00Z'
     }]
     await page.addInitScript(() => localStorage.setItem('i18nextLng', 'en'))
     await page.route('**/api/v1/**', async route => {
@@ -143,6 +148,26 @@ async function mockExplorer(
                 },
                 body: 'payload'
             })
+        } else if (url.pathname.endsWith('/explorer/download') && request.method() === 'POST') {
+            mutations.push(request.postDataJSON())
+            await route.fulfill({
+                status: 200,
+                headers: {
+                    'Content-Type': 'application/zip',
+                    'Content-Disposition': 'attachment; filename="main-selection.zip"'
+                },
+                body: 'PK mock zip'
+            })
+        } else if (url.pathname.endsWith('/explorer/move') && request.method() === 'POST') {
+            const body = request.postDataJSON() as { revision: number }
+            mutations.push(body)
+            managedProject.draftRevision = body.revision + 1
+            await fulfillJson(route, { updated: true, movedEntries: 2, draftRevision: managedProject.draftRevision })
+        } else if (url.pathname.endsWith('/explorer/delete') && request.method() === 'POST') {
+            const body = request.postDataJSON() as { revision: number }
+            mutations.push(body)
+            managedProject.draftRevision = body.revision + 1
+            await fulfillJson(route, { deleted: true, deletedDirectories: 2, deletedModules: 1, draftRevision: managedProject.draftRevision })
         } else if (url.pathname.endsWith('/directories') && request.method() === 'POST') {
             const body = request.postDataJSON() as { path: string }
             mutations.push(body)
@@ -162,6 +187,7 @@ async function mockExplorer(
 
 interface UploadMockState {
     uploadIds: string[]
+    directoryBodies: Record<string, unknown>[]
     moduleBodies: Record<string, unknown>[]
     deletedUploadIds: string[]
     detailRequests: number
@@ -180,6 +206,7 @@ async function mockExplorerUploads(page: Page, options: UploadMockOptions = {}):
         : Promise.resolve()
     const state: UploadMockState = {
         uploadIds: [],
+        directoryBodies: [],
         moduleBodies: [],
         deletedUploadIds: [],
         detailRequests: 0,
@@ -187,6 +214,7 @@ async function mockExplorerUploads(page: Page, options: UploadMockOptions = {}):
     }
     const detailProject = { ...project }
     const detailServer = { ...server, modules: [...server.modules] }
+    const detailDirectories: { id: string, path: string, createdAt: string, updatedAt: string }[] = []
     await page.addInitScript(() => localStorage.setItem('i18nextLng', 'en'))
     await page.route('**/api/v1/**', async route => {
         const request = route.request()
@@ -204,7 +232,22 @@ async function mockExplorerUploads(page: Page, options: UploadMockOptions = {}):
             })
         } else if (url.pathname === '/api/v1/projects/project-1/servers/server-1' && request.method() === 'GET') {
             state.detailRequests += 1
-            await fulfillJson(route, { project: detailProject, server: detailServer, directories: [] })
+            await fulfillJson(route, { project: detailProject, server: detailServer, directories: detailDirectories })
+        } else if (url.pathname.endsWith('/directories') && request.method() === 'POST') {
+            const body = request.postDataJSON() as Record<string, unknown>
+            state.directoryBodies.push(body)
+            detailProject.draftRevision = Number(body.revision) + 1
+            detailDirectories.push({
+                id: `directory-${detailDirectories.length + 1}`,
+                path: String(body.path),
+                createdAt: '2026-01-01T00:00:00Z',
+                updatedAt: '2026-01-01T00:00:00Z'
+            })
+            await fulfillJson(route, {
+                id: detailDirectories.at(-1)?.id,
+                path: body.path,
+                draftRevision: detailProject.draftRevision
+            }, 201)
         } else if (url.pathname === '/api/v1/projects/project-1/uploads' && request.method() === 'POST') {
             if (state.uploadIds.length === 0) await firstUploadGate
             const id = `upload-${state.uploadIds.length + 1}`
@@ -252,6 +295,62 @@ test('opens a server-specific Explorer page and creates a real folder', async ({
     }))
 })
 
+test('selects multiple Explorer entries for atomic move and delete actions', async ({ page }) => {
+    const mutations = await mockExplorer(page)
+    await page.goto('/projects/project-1/servers/server-1/files')
+    await page.locator('.explorer-tree').getByRole('button', { name: /Files$/ }).click()
+
+    const configRow = page.locator('.explorer-table').getByRole('row', { name: /config Folder files\/config/ })
+    const resourcepacksRow = page.locator('.explorer-table').getByRole('row', { name: /resourcepacks Folder/ })
+    await configRow.click()
+    await resourcepacksRow.click({ modifiers: ['Control'] })
+    await expect(page.getByText('2 of 2 selected')).toBeVisible()
+    await resourcepacksRow.click({ modifiers: ['Control'] })
+    await configRow.click()
+    await resourcepacksRow.click({ modifiers: ['Shift'] })
+    await expect(page.getByText('2 of 2 selected')).toBeVisible()
+
+    page.once('dialog', dialog => dialog.accept('archive'))
+    await page.getByRole('button', { name: 'Move' }).click()
+    await expect.poll(() => mutations).toContainEqual(expect.objectContaining({
+        revision: 3,
+        destinationPath: 'archive',
+        entries: [
+            { kind: 'directory', id: 'directory-1' },
+            { kind: 'directory', id: 'directory-2' }
+        ]
+    }))
+
+    await page.getByRole('checkbox', { name: 'Select all visible items' }).check()
+    page.once('dialog', dialog => dialog.accept())
+    await page.getByRole('button', { name: 'Delete' }).click()
+    await expect.poll(() => mutations).toContainEqual(expect.objectContaining({
+        revision: 4,
+        recursive: true,
+        entries: [
+            { kind: 'directory', id: 'directory-1' },
+            { kind: 'directory', id: 'directory-2' }
+        ]
+    }))
+})
+
+test('downloads a selected folder as a ZIP', async ({ page }) => {
+    const mutations = await mockExplorer(page, 'AUDITOR')
+    await page.goto('/projects/project-1/servers/server-1/files')
+    await page.locator('.explorer-tree').getByRole('button', { name: /Files$/ }).click()
+    await page.getByRole('checkbox', { name: 'Select config' }).check()
+
+    const [download] = await Promise.all([
+        page.waitForEvent('download'),
+        page.getByRole('button', { name: 'Download' }).click()
+    ])
+
+    expect(download.suggestedFilename()).toBe('main-selection.zip')
+    await expect.poll(() => mutations).toContainEqual({
+        entries: [{ kind: 'directory', id: 'directory-1' }]
+    })
+})
+
 test('keeps the Explorer available but read-only for auditors', async ({ page }) => {
     await mockExplorer(page, 'AUDITOR')
     await page.goto('/projects/project-1/servers/server-1/files')
@@ -263,7 +362,7 @@ test('keeps the Explorer available but read-only for auditors', async ({ page })
     await expect(folderRow).toBeVisible()
     await folderRow.click()
     const downloadButton = page.getByRole('button', { name: 'Download' })
-    await expect(downloadButton).toBeDisabled()
+    await expect(downloadButton).toBeEnabled()
 
     await page.locator('.explorer-tree').getByRole('button', { name: /config$/ }).click()
     await page.locator('.explorer-table').getByRole('row', { name: /options\.txt/ }).click()
@@ -364,7 +463,7 @@ test('accepts dropped files only after opening an uploadable Explorer folder', a
 
     await page.locator('.explorer-tree').getByRole('button', { name: /Files$/ }).click()
     await explorer.dispatchEvent('dragenter', { dataTransfer })
-    await expect(page.getByText('Drop files here to upload')).toBeVisible()
+    await expect(page.getByText('Drop files or folders here to upload')).toBeVisible()
     await explorer.dispatchEvent('drop', { dataTransfer })
 
     await expect(page.getByText('2 file(s) uploaded.')).toBeVisible()
@@ -408,7 +507,7 @@ test('stops a multi-file upload after a failure and removes the unused upload', 
         { name: 'never-uploaded.txt', mimeType: 'text/plain', buffer: Buffer.from('third') }
     ])
 
-    await expect(page.getByRole('alert')).toContainText('1/3 file(s) uploaded. duplicate.txt failed: Module path already exists')
+    await expect(page.getByRole('alert')).toContainText('1/3 file(s) uploaded. first.txt failed: Module path already exists')
     expect(state.uploadIds).toEqual(['upload-1', 'upload-2'])
     expect(state.moduleBodies).toHaveLength(2)
     expect(state.deletedUploadIds).toEqual(['upload-2'])

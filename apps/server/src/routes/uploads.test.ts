@@ -38,6 +38,7 @@ const downloadRow = {
     display_name: 'Configuration'
 }
 const downloadUrl = '/api/v1/projects/project-1/servers/server-1/modules/module-1/download'
+const explorerDownloadUrl = '/api/v1/projects/project-1/servers/server-1/explorer/download'
 const apps: FastifyInstance[] = []
 
 async function createApp(role: Role | 'VIEWER' | null = 'EDITOR'): Promise<FastifyInstance> {
@@ -142,5 +143,81 @@ describe('module file downloads', () => {
         }
         expect((await (await createApp(null)).inject(downloadUrl)).statusCode).toBe(401)
         expect((await (await createApp('VIEWER')).inject(downloadUrl)).statusCode).toBe(403)
+    })
+})
+
+describe('Explorer ZIP downloads', () => {
+    it('streams selected directory contents with full Explorer paths and empty folders', async () => {
+        mocks.execute.mockImplementation(async (sql: string) => {
+            if (sql.includes('SELECT s.server_key')) return [[{ server_key: 'main' }]]
+            if (sql.includes('FROM server_directories')) return [[
+                { id: 'directory-config', path: 'config' },
+                { id: 'directory-empty', path: 'config/empty' }
+            ]]
+            if (sql.includes('FROM modules m LEFT JOIN uploads')) return [[{
+                id: 'module-options',
+                upload_id: 'upload-1',
+                type: 'File',
+                file_name: 'options.txt',
+                relative_path: 'config/options.txt',
+                optional_mode: 'REQUIRED',
+                display_name: 'options.txt',
+                needs_manual_file: 0,
+                original_name: 'options.txt',
+                object_key: downloadRow.object_key,
+                upload_status: 'READY'
+            }]]
+            throw new Error(`Unexpected query: ${sql}`)
+        })
+        const app = await createApp('AUDITOR')
+
+        const response = await app.inject({
+            method: 'POST',
+            url: explorerDownloadUrl,
+            headers: { 'x-csrf-token': 'csrf-token' },
+            payload: { entries: [{ kind: 'directory', id: 'directory-config' }] }
+        })
+
+        expect(response.statusCode).toBe(200)
+        expect(response.headers['content-type']).toContain('application/zip')
+        expect(response.headers['content-disposition']).toContain('main-selection.zip')
+        expect(response.rawPayload.subarray(0, 2).toString()).toBe('PK')
+        const archiveText = response.rawPayload.toString('latin1')
+        expect(archiveText).toContain('files/config/options.txt')
+        expect(archiveText).toContain('files/config/empty/')
+        expect(mocks.getStoredObject).toHaveBeenCalledWith(downloadRow.object_key)
+    })
+
+    it('refuses to create an incomplete ZIP when a selected module needs a file', async () => {
+        mocks.execute.mockImplementation(async (sql: string) => {
+            if (sql.includes('SELECT s.server_key')) return [[{ server_key: 'main' }]]
+            if (sql.includes('FROM server_directories')) return [[]]
+            if (sql.includes('FROM modules m LEFT JOIN uploads')) return [[{
+                id: 'module-manual',
+                upload_id: null,
+                type: 'ForgeMod',
+                file_name: 'manual.jar',
+                relative_path: null,
+                optional_mode: 'REQUIRED',
+                display_name: 'manual.jar',
+                needs_manual_file: 1,
+                original_name: null,
+                object_key: null,
+                upload_status: null
+            }]]
+            throw new Error(`Unexpected query: ${sql}`)
+        })
+        const app = await createApp('EDITOR')
+
+        const response = await app.inject({
+            method: 'POST',
+            url: explorerDownloadUrl,
+            headers: { 'x-csrf-token': 'csrf-token' },
+            payload: { entries: [{ kind: 'module', id: 'module-manual' }] }
+        })
+
+        expect(response.statusCode).toBe(409)
+        expect(response.json().detail).toContain('forgemods/required/manual.jar')
+        expect(mocks.getStoredObject).not.toHaveBeenCalled()
     })
 })

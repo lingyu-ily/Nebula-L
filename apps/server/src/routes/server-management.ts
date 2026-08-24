@@ -2,9 +2,12 @@ import { randomUUID } from 'crypto'
 import {
     directoryDeleteSchema,
     directoryInputSchema,
+    explorerDeleteSchema,
+    explorerMoveSchema,
     modulePatchSchema,
     moduleReplaceSchema
 } from '@nebula/shared'
+import type { ExplorerEntryRef } from '@nebula/shared'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 import { writeAudit } from '../audit.js'
@@ -262,6 +265,36 @@ function fileNameFromPath(path: string): string {
 
 function directoryParent(path: string): string {
     return path.split('/').slice(0, -1).join('/')
+}
+
+function pathBaseName(path: string): string {
+    return path.split('/').at(-1)!
+}
+
+function resolveExplorerSelection(
+    entries: ExplorerEntryRef[],
+    directories: DirectoryRow[],
+    modules: ModuleRow[]
+): { directoryRoots: DirectoryRow[], explicitModules: ModuleRow[] } {
+    const directoryById = new Map(directories.map(directory => [directory.id, directory]))
+    const moduleById = new Map(modules.map(module => [module.id, module]))
+    const selectedDirectories: DirectoryRow[] = []
+    const explicitModules: ModuleRow[] = []
+    for (const entry of entries) {
+        if (entry.kind === 'directory') {
+            const directory = directoryById.get(entry.id)
+            if (!directory) throw new HttpError(404, 'Directory not found')
+            selectedDirectories.push(directory)
+        } else {
+            const module = moduleById.get(entry.id)
+            if (!module) throw new HttpError(404, 'Module not found')
+            explicitModules.push(module)
+        }
+    }
+    const directoryRoots = selectedDirectories.filter(directory => !selectedDirectories.some(other =>
+        other.id !== directory.id && isPathWithin(directory.path, other.path)
+    ))
+    return { directoryRoots, explicitModules }
 }
 
 export async function registerServerManagementRoutes(app: FastifyInstance): Promise<void> {
@@ -544,6 +577,212 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
                     path: current.path,
                     directories: subtree.map(row => row.path),
                     modules: modules.map(mapModule)
+                },
+                after: { deletedDirectories, deletedModules }
+            })
+        })
+        return { deleted: true, deletedDirectories, deletedModules, draftRevision: expectedRevision + 1 }
+    })
+
+    app.post('/api/v1/projects/:projectId/servers/:serverId/explorer/move', {
+        preHandler: requireRole('ADMIN', 'EDITOR')
+    }, async request => {
+        requireCsrf(request)
+        const { projectId, serverId } = request.params as { projectId: string, serverId: string }
+        const expectedRevision = getRevision(request)
+        const parsed = explorerMoveSchema.safeParse(request.body)
+        if (!parsed.success) {
+            throw new HttpError(400, 'Invalid Explorer move', undefined, parsed.error.flatten())
+        }
+        const destination = parsed.data.destinationPath === ''
+            ? ''
+            : normalizeManagedPath(parsed.data.destinationPath)
+        let movedEntries = 0
+        let movedDirectories = 0
+        let movedModules = 0
+        await withTransaction(async connection => {
+            await lockProject(connection, projectId, expectedRevision)
+            await lockServer(connection, projectId, serverId)
+            const [directories] = await connection.query<DirectoryRow[]>(
+                'SELECT * FROM server_directories WHERE server_id = ? AND project_id = ? FOR UPDATE',
+                [serverId, projectId]
+            )
+            const [modules] = await connection.query<ModuleRow[]>(
+                `SELECT m.*, u.original_name, u.size, u.md5, u.sha256
+                 FROM modules m LEFT JOIN uploads u ON u.id = m.upload_id
+                 WHERE m.server_id = ? AND m.project_id = ? FOR UPDATE`,
+                [serverId, projectId]
+            )
+            const selection = resolveExplorerSelection(parsed.data.entries, directories, modules)
+            if (destination && !directories.some(row => managedPathKey(row.path) === managedPathKey(destination))) {
+                throw new HttpError(409, 'Destination directory not found')
+            }
+            for (const module of selection.explicitModules) {
+                if (module.type !== 'File' || !module.relative_path) {
+                    throw new HttpError(400, 'Only File modules can be moved in Explorer')
+                }
+            }
+            const explicitModuleRoots = selection.explicitModules.filter(module =>
+                !selection.directoryRoots.some(directory => isPathWithin(module.relative_path!, directory.path))
+            )
+            const targetPath = (source: string): string => normalizeManagedPath(
+                destination ? `${destination}/${pathBaseName(source)}` : pathBaseName(source)
+            )
+            const directoryTargets = new Map(selection.directoryRoots.map(directory => [directory.id, targetPath(directory.path)]))
+            const explicitModuleTargets = new Map(explicitModuleRoots.map(module => [module.id, targetPath(module.relative_path!)]))
+            for (const directory of selection.directoryRoots) {
+                const target = directoryTargets.get(directory.id)!
+                if (managedPathKey(directory.path) === managedPathKey(target)) {
+                    throw new HttpError(400, 'Entry path is unchanged')
+                }
+                if (isPathWithin(target, directory.path)) {
+                    throw new HttpError(409, 'Invalid directory move', 'A directory cannot be moved inside itself')
+                }
+            }
+            for (const module of explicitModuleRoots) {
+                if (managedPathKey(module.relative_path!) === managedPathKey(explicitModuleTargets.get(module.id)!)) {
+                    throw new HttpError(400, 'Entry path is unchanged')
+                }
+            }
+            const directoryMoves = directories.flatMap(row => {
+                const root = selection.directoryRoots.find(directory => isPathWithin(row.path, directory.path))
+                if (!root) return []
+                return [{ row, nextPath: normalizeManagedPath(replacePathPrefix(row.path, root.path, directoryTargets.get(root.id)!)) }]
+            })
+            const explicitModuleIds = new Set(explicitModuleRoots.map(module => module.id))
+            const moduleMoves = modules.flatMap(row => {
+                if (row.type !== 'File' || !row.relative_path) return []
+                const root = selection.directoryRoots.find(directory => isPathWithin(row.relative_path!, directory.path))
+                if (root) {
+                    return [{ row, nextPath: normalizeManagedPath(replacePathPrefix(
+                        row.relative_path,
+                        root.path,
+                        directoryTargets.get(root.id)!
+                    )) }]
+                }
+                const nextPath = explicitModuleTargets.get(row.id)
+                return explicitModuleIds.has(row.id) && nextPath ? [{ row, nextPath }] : []
+            })
+            const movedDirectoryIds = new Set(directoryMoves.map(value => value.row.id))
+            const movedModuleIds = new Set(moduleMoves.map(value => value.row.id))
+            const directoryKeys = new Set(directories
+                .filter(row => !movedDirectoryIds.has(row.id))
+                .map(row => managedPathKey(row.path)))
+            const fileKeys = new Set(modules
+                .filter(row => row.type === 'File' && row.relative_path && !movedModuleIds.has(row.id))
+                .map(row => managedPathKey(row.relative_path!)))
+            for (const value of directoryMoves) {
+                const key = managedPathKey(value.nextPath)
+                if (directoryKeys.has(key) || fileKeys.has(key)) {
+                    throw new HttpError(409, 'Path conflict', `The target path ${value.nextPath} already exists`)
+                }
+                directoryKeys.add(key)
+            }
+            for (const value of moduleMoves) {
+                const key = managedPathKey(value.nextPath)
+                if (directoryKeys.has(key) || fileKeys.has(key)) {
+                    throw new HttpError(409, 'Path conflict', `The target path ${value.nextPath} already exists`)
+                }
+                fileKeys.add(key)
+            }
+            for (const value of directoryMoves) {
+                await connection.execute(
+                    `UPDATE server_directories SET path = ?, path_hash = ?, updated_at = UTC_TIMESTAMP(3)
+                     WHERE id = ?`,
+                    [value.nextPath, managedPathHash(value.nextPath), value.row.id]
+                )
+            }
+            for (const value of moduleMoves) {
+                await connection.execute(
+                    `UPDATE modules SET relative_path = ?, file_name = ?, updated_at = UTC_TIMESTAMP(3)
+                     WHERE id = ?`,
+                    [value.nextPath, fileNameFromPath(value.nextPath), value.row.id]
+                )
+            }
+            movedEntries = selection.directoryRoots.length + explicitModuleRoots.length
+            movedDirectories = directoryMoves.length
+            movedModules = moduleMoves.length
+            await bumpProject(connection, projectId)
+            await writeAudit(connection, auditContextFromRequest(request), {
+                action: 'explorer.entries_moved',
+                entityType: 'server',
+                entityId: serverId,
+                projectId,
+                before: {
+                    entries: parsed.data.entries,
+                    directories: directoryMoves.map(value => value.row.path),
+                    modules: moduleMoves.map(value => mapModule(value.row))
+                },
+                after: {
+                    destination,
+                    directoryPaths: directoryMoves.map(value => value.nextPath),
+                    modulePaths: moduleMoves.map(value => value.nextPath)
+                }
+            })
+        })
+        return {
+            updated: true,
+            movedEntries,
+            movedDirectories,
+            movedModules,
+            draftRevision: expectedRevision + 1
+        }
+    })
+
+    app.post('/api/v1/projects/:projectId/servers/:serverId/explorer/delete', {
+        preHandler: requireRole('ADMIN', 'EDITOR')
+    }, async request => {
+        requireCsrf(request)
+        const { projectId, serverId } = request.params as { projectId: string, serverId: string }
+        const expectedRevision = getRevision(request)
+        const parsed = explorerDeleteSchema.safeParse(request.body)
+        if (!parsed.success) {
+            throw new HttpError(400, 'Invalid Explorer deletion', undefined, parsed.error.flatten())
+        }
+        let deletedDirectories = 0
+        let deletedModules = 0
+        await withTransaction(async connection => {
+            await lockProject(connection, projectId, expectedRevision)
+            await lockServer(connection, projectId, serverId)
+            const [directories] = await connection.query<DirectoryRow[]>(
+                'SELECT * FROM server_directories WHERE server_id = ? AND project_id = ? FOR UPDATE',
+                [serverId, projectId]
+            )
+            const [modules] = await connection.query<ModuleRow[]>(
+                `SELECT m.*, u.original_name, u.size, u.md5, u.sha256
+                 FROM modules m LEFT JOIN uploads u ON u.id = m.upload_id
+                 WHERE m.server_id = ? AND m.project_id = ? FOR UPDATE`,
+                [serverId, projectId]
+            )
+            const selection = resolveExplorerSelection(parsed.data.entries, directories, modules)
+            const directoriesToDelete = directories
+                .filter(row => selection.directoryRoots.some(root => isPathWithin(row.path, root.path)))
+                .sort((left, right) => right.path.length - left.path.length)
+            const explicitModuleIds = new Set(selection.explicitModules.map(module => module.id))
+            const modulesToDelete = modules.filter(module =>
+                explicitModuleIds.has(module.id)
+                || module.type === 'File'
+                    && module.relative_path != null
+                    && selection.directoryRoots.some(root => isPathWithin(module.relative_path!, root.path))
+            )
+            for (const module of modulesToDelete) {
+                await connection.execute('DELETE FROM modules WHERE id = ?', [module.id])
+            }
+            for (const directory of directoriesToDelete) {
+                await connection.execute('DELETE FROM server_directories WHERE id = ?', [directory.id])
+            }
+            deletedDirectories = directoriesToDelete.length
+            deletedModules = modulesToDelete.length
+            await bumpProject(connection, projectId)
+            await writeAudit(connection, auditContextFromRequest(request), {
+                action: 'explorer.entries_deleted',
+                entityType: 'server',
+                entityId: serverId,
+                projectId,
+                before: {
+                    entries: parsed.data.entries,
+                    directories: directoriesToDelete.map(row => row.path),
+                    modules: modulesToDelete.map(mapModule)
                 },
                 after: { deletedDirectories, deletedModules }
             })

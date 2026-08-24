@@ -175,7 +175,7 @@ export function setCsrfToken(token: string): void {
     csrfToken = token
 }
 
-export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function apiResponse(path: string, init: RequestInit = {}): Promise<Response> {
     const headers = new Headers(init.headers)
     if (init.body && !(init.body instanceof FormData)) {
         headers.set('Content-Type', 'application/json')
@@ -193,6 +193,11 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
         const problem = await response.json().catch(() => ({ title: response.statusText })) as { title?: string, detail?: string }
         throw new ApiError(response.status, problem.detail || problem.title || response.statusText)
     }
+    return response
+}
+
+export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const response = await apiResponse(path, init)
     if (response.status === 204) {
         return undefined as T
     }

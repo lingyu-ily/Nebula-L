@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
     directoryInputSchema,
+    explorerDeleteSchema,
+    explorerDownloadSchema,
+    explorerMoveSchema,
     isSafeFileName,
     isSafeRelativePath,
     launcherUiInputSchema,
@@ -26,6 +29,14 @@ describe('shared validation', () => {
         expect(isSafeFileName('../mod.jar')).toBe(false)
         expect(modulePatchSchema.safeParse({}).success).toBe(false)
         expect(modulePatchSchema.safeParse({ fileName: 'renamed.jar' }).success).toBe(true)
+    })
+
+    it('validates explorer batch operations and rejects duplicate entries', () => {
+        const entries = [{ kind: 'directory' as const, id: 'directory-1' }]
+        expect(explorerMoveSchema.safeParse({ entries, destinationPath: '' }).success).toBe(true)
+        expect(explorerMoveSchema.safeParse({ entries, destinationPath: '../outside' }).success).toBe(false)
+        expect(explorerDeleteSchema.safeParse({ entries, recursive: true }).success).toBe(true)
+        expect(explorerDownloadSchema.safeParse({ entries: [...entries, ...entries] }).success).toBe(false)
     })
 
     it('allows only File modules to disable checksum validation', () => {
