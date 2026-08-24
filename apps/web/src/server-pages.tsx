@@ -5,7 +5,9 @@ import {
     useState,
     type DragEvent,
     type FormEvent,
+    type KeyboardEvent as ReactKeyboardEvent,
     type MouseEvent as ReactMouseEvent,
+    type PointerEvent as ReactPointerEvent,
     type ReactNode
 } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -35,6 +37,68 @@ import { Link, NavLink, Navigate, useNavigate, useParams } from './router.js'
 type OptionalMode = ManagedModule['optionalMode']
 type ModuleType = ManagedModule['type']
 type ExplorerSort = 'name' | 'type' | 'size' | 'updated'
+type ExplorerColumnKey = 'name' | 'type' | 'destination' | 'size' | 'status' | 'validation' | 'updated'
+type ExplorerColumnRatios = Record<ExplorerColumnKey, number>
+
+interface ExplorerColumnConfig {
+    key: ExplorerColumnKey
+    labelKey: string
+    defaultWidth: number
+    minimumWidth: number
+}
+
+const EXPLORER_COLUMN_STORAGE_KEY = 'nebula:explorer-column-widths:v1'
+const EXPLORER_SELECTION_WIDTH = 44
+const EXPLORER_TABLE_MINIMUM_WIDTH = 1000
+const EXPLORER_COLUMN_CONFIGS: ExplorerColumnConfig[] = [
+    { key: 'name', labelKey: 'name', defaultWidth: 180, minimumWidth: 120 },
+    { key: 'type', labelKey: 'type', defaultWidth: 100, minimumWidth: 80 },
+    { key: 'destination', labelKey: 'destination', defaultWidth: 220, minimumWidth: 140 },
+    { key: 'size', labelKey: 'size', defaultWidth: 90, minimumWidth: 70 },
+    { key: 'status', labelKey: 'status', defaultWidth: 110, minimumWidth: 90 },
+    { key: 'validation', labelKey: 'checksumValidation', defaultWidth: 120, minimumWidth: 100 },
+    { key: 'updated', labelKey: 'updated', defaultWidth: 136, minimumWidth: 120 }
+]
+const EXPLORER_COLUMN_CONFIG_BY_KEY = Object.fromEntries(
+    EXPLORER_COLUMN_CONFIGS.map(config => [config.key, config])
+) as Record<ExplorerColumnKey, ExplorerColumnConfig>
+const EXPLORER_DEFAULT_DATA_WIDTH = EXPLORER_COLUMN_CONFIGS.reduce(
+    (total, config) => total + config.defaultWidth,
+    0
+)
+
+function defaultExplorerColumnRatios(): ExplorerColumnRatios {
+    return Object.fromEntries(EXPLORER_COLUMN_CONFIGS.map(config => [
+        config.key,
+        config.defaultWidth / EXPLORER_DEFAULT_DATA_WIDTH
+    ])) as ExplorerColumnRatios
+}
+
+function parseExplorerColumnRatios(value: unknown): ExplorerColumnRatios {
+    const fallback = defaultExplorerColumnRatios()
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return fallback
+    const record = value as Record<string, unknown>
+    const widths = EXPLORER_COLUMN_CONFIGS.map(config => record[config.key])
+    if (widths.some(width => typeof width !== 'number' || !Number.isFinite(width) || width < 0.02 || width > 0.8)) {
+        return fallback
+    }
+    const total = widths.reduce<number>((sum, width) => sum + Number(width), 0)
+    if (total < 0.98 || total > 1.02) return fallback
+    return Object.fromEntries(EXPLORER_COLUMN_CONFIGS.map((config, index) => [
+        config.key,
+        Number(widths[index]) / total
+    ])) as ExplorerColumnRatios
+}
+
+function loadExplorerColumnRatios(): ExplorerColumnRatios {
+    try {
+        const stored = window.localStorage.getItem(EXPLORER_COLUMN_STORAGE_KEY)
+        return stored ? parseExplorerColumnRatios(JSON.parse(stored)) : defaultExplorerColumnRatios()
+    } catch {
+        return defaultExplorerColumnRatios()
+    }
+}
+
 interface UploadProgress {
     phase: 'folders' | 'files'
     completed: number
@@ -1304,6 +1368,8 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
     const [sortBy, setSortBy] = useState<ExplorerSort>('name')
     const [direction, setDirection] = useState<'asc' | 'desc'>('asc')
     const [selectedKeys, setSelectedKeys] = useState<Set<string>>(() => new Set())
+    const [columnRatios, setColumnRatios] = useState<ExplorerColumnRatios>(loadExplorerColumnRatios)
+    const [tableViewportWidth, setTableViewportWidth] = useState(EXPLORER_TABLE_MINIMUM_WIDTH)
     const [dragActive, setDragActive] = useState(false)
     const [dropReading, setDropReading] = useState(false)
     const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null)
@@ -1312,6 +1378,16 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
     const uploadInput = useRef<HTMLInputElement>(null)
     const replaceInput = useRef<HTMLInputElement>(null)
     const selectAllInput = useRef<HTMLInputElement>(null)
+    const tableWrap = useRef<HTMLDivElement>(null)
+    const columnResize = useRef<{
+        pointerId: number
+        startX: number
+        leftKey: ExplorerColumnKey
+        rightKey: ExplorerColumnKey
+        leftWidth: number
+        rightWidth: number
+        dataWidth: number
+    } | null>(null)
     const selectionAnchor = useRef('')
     const entries = useMemo(
         () => sortEntries(currentEntries(detail, currentPath, search, {
@@ -1335,6 +1411,23 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
     const selected = selectedEntries.length === 1 ? selectedEntries[0] : undefined
     const allSelected = selectableKeys.length > 0 && selectableKeys.every(key => selectedKeys.has(key))
     const target = uploadTarget(currentPath, detail.server)
+    const minimumDataWidth = Math.max(...EXPLORER_COLUMN_CONFIGS.map(config =>
+        config.minimumWidth / columnRatios[config.key]
+    ))
+    const tableWidth = Math.ceil(Math.max(
+        EXPLORER_TABLE_MINIMUM_WIDTH,
+        tableViewportWidth,
+        EXPLORER_SELECTION_WIDTH + minimumDataWidth
+    ))
+    const tableDataWidth = tableWidth - EXPLORER_SELECTION_WIDTH
+    const columnWidths = Object.fromEntries(EXPLORER_COLUMN_CONFIGS.map(config => [
+        config.key,
+        columnRatios[config.key] * tableDataWidth
+    ])) as Record<ExplorerColumnKey, number>
+    const explorerColumns = EXPLORER_COLUMN_CONFIGS.map(config => ({
+        ...config,
+        label: t(config.labelKey)
+    }))
     const action = useMutation({
         mutationFn: (operation: () => Promise<unknown>) => operation(),
         onSuccess: () => {
@@ -1378,6 +1471,23 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
         const timer = window.setTimeout(() => setUploadSuccess(null), 5000)
         return (): void => window.clearTimeout(timer)
     }, [uploadSuccess])
+    useEffect(() => {
+        const element = tableWrap.current
+        if (!element) return
+        const observer = new ResizeObserver(entries => {
+            const width = entries[0]?.contentRect.width
+            if (width && Number.isFinite(width)) setTableViewportWidth(Math.round(width))
+        })
+        observer.observe(element)
+        return (): void => observer.disconnect()
+    }, [])
+    useEffect(() => {
+        try {
+            window.localStorage.setItem(EXPLORER_COLUMN_STORAGE_KEY, JSON.stringify(columnRatios))
+        } catch {
+            // Explorer remains usable when browser storage is unavailable.
+        }
+    }, [columnRatios])
 
     const upload = async (file: File): Promise<{ id: string }> => {
         const body = new FormData()
@@ -1761,6 +1871,77 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
             window.setTimeout(() => URL.revokeObjectURL(url), 0)
         })
     }
+    const resizeColumnBoundary = (
+        leftKey: ExplorerColumnKey,
+        rightKey: ExplorerColumnKey,
+        delta: number,
+        leftWidth = columnWidths[leftKey],
+        rightWidth = columnWidths[rightKey],
+        dataWidth = tableDataWidth
+    ): void => {
+        const leftMinimum = EXPLORER_COLUMN_CONFIG_BY_KEY[leftKey].minimumWidth
+        const rightMinimum = EXPLORER_COLUMN_CONFIG_BY_KEY[rightKey].minimumWidth
+        const clampedDelta = Math.max(leftMinimum - leftWidth, Math.min(delta, rightWidth - rightMinimum))
+        setColumnRatios(current => ({
+            ...current,
+            [leftKey]: (leftWidth + clampedDelta) / dataWidth,
+            [rightKey]: (rightWidth - clampedDelta) / dataWidth
+        }))
+    }
+    const beginColumnResize = (
+        event: ReactPointerEvent<HTMLSpanElement>,
+        leftKey: ExplorerColumnKey,
+        rightKey: ExplorerColumnKey
+    ): void => {
+        if (event.button !== 0) return
+        event.preventDefault()
+        event.currentTarget.setPointerCapture(event.pointerId)
+        columnResize.current = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            leftKey,
+            rightKey,
+            leftWidth: columnWidths[leftKey],
+            rightWidth: columnWidths[rightKey],
+            dataWidth: tableDataWidth
+        }
+    }
+    const continueColumnResize = (event: ReactPointerEvent<HTMLSpanElement>): void => {
+        const resize = columnResize.current
+        if (resize?.pointerId !== event.pointerId) return
+        resizeColumnBoundary(
+            resize.leftKey,
+            resize.rightKey,
+            event.clientX - resize.startX,
+            resize.leftWidth,
+            resize.rightWidth,
+            resize.dataWidth
+        )
+    }
+    const endColumnResize = (event: ReactPointerEvent<HTMLSpanElement>): void => {
+        if (columnResize.current?.pointerId !== event.pointerId) return
+        columnResize.current = null
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId)
+        }
+    }
+    const resizeColumnWithKeyboard = (
+        event: ReactKeyboardEvent<HTMLSpanElement>,
+        leftKey: ExplorerColumnKey,
+        rightKey: ExplorerColumnKey
+    ): void => {
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+        event.preventDefault()
+        const step = event.shiftKey ? 25 : 10
+        resizeColumnBoundary(leftKey, rightKey, event.key === 'ArrowRight' ? step : -step)
+    }
+    const resetColumnBoundary = (leftKey: ExplorerColumnKey, rightKey: ExplorerColumnKey): void => {
+        const combinedWidth = columnWidths[leftKey] + columnWidths[rightKey]
+        const leftDefault = EXPLORER_COLUMN_CONFIG_BY_KEY[leftKey].defaultWidth
+        const rightDefault = EXPLORER_COLUMN_CONFIG_BY_KEY[rightKey].defaultWidth
+        const targetLeftWidth = combinedWidth * leftDefault / (leftDefault + rightDefault)
+        resizeColumnBoundary(leftKey, rightKey, targetLeftWidth - columnWidths[leftKey])
+    }
     const openPath = (path: string): void => {
         setExpandedPaths(current => {
             const next = new Set(current)
@@ -1874,10 +2055,17 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
                     </select></label>
                     <button className="text-button" onClick={() => setDirection(value => value === 'asc' ? 'desc' : 'asc')}>{direction === 'asc' ? '↑' : '↓'}</button>
                 </div>
-                <div className="explorer-table-wrap">
-                    <table className="explorer-table">
+                <div ref={tableWrap} className="explorer-table-wrap">
+                    <table className="explorer-table" style={{ width: `${tableWidth}px` }}>
+                        <colgroup>
+                            <col style={{ width: `${EXPLORER_SELECTION_WIDTH}px` }} />
+                            {explorerColumns.map(column => <col
+                                key={column.key}
+                                style={{ width: `${columnWidths[column.key]}px` }}
+                            />)}
+                        </colgroup>
                         <thead><tr>
-                            <th className="explorer-selection-cell"><input
+                            <th scope="col" className="explorer-selection-cell"><input
                                 ref={selectAllInput}
                                 type="checkbox"
                                 checked={allSelected}
@@ -1885,7 +2073,42 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
                                 aria-label={t('selectAll')}
                                 onChange={toggleAll}
                             /></th>
-                            <th>{t('name')}</th><th>{t('type')}</th><th>{t('destination')}</th><th>{t('size')}</th><th>{t('status')}</th><th>{t('checksumValidation')}</th><th>{t('updated')}</th>
+                            {explorerColumns.map((column, index) => {
+                                const rightColumn = explorerColumns[index + 1]
+                                const resizeLabel = rightColumn
+                                    ? t('resizeExplorerColumns', { left: column.label, right: rightColumn.label })
+                                    : ''
+                                return <th
+                                    key={column.key}
+                                    scope="col"
+                                    className="explorer-column-header"
+                                    data-explorer-column={column.key}
+                                    title={column.label}
+                                >
+                                    <span className="explorer-column-label">{column.label}</span>
+                                    {rightColumn && <span
+                                        className="explorer-column-resizer"
+                                        role="separator"
+                                        tabIndex={0}
+                                        aria-orientation="vertical"
+                                        aria-label={resizeLabel}
+                                        aria-valuemin={column.minimumWidth}
+                                        aria-valuemax={Math.round(columnWidths[column.key]
+                                            + columnWidths[rightColumn.key]
+                                            - rightColumn.minimumWidth)}
+                                        aria-valuenow={Math.round(columnWidths[column.key])}
+                                        title={resizeLabel}
+                                        data-resize-boundary={`${column.key}-${rightColumn.key}`}
+                                        onPointerDown={event => beginColumnResize(event, column.key, rightColumn.key)}
+                                        onPointerMove={continueColumnResize}
+                                        onPointerUp={endColumnResize}
+                                        onPointerCancel={endColumnResize}
+                                        onLostPointerCapture={() => { columnResize.current = null }}
+                                        onKeyDown={event => resizeColumnWithKeyboard(event, column.key, rightColumn.key)}
+                                        onDoubleClick={() => resetColumnBoundary(column.key, rightColumn.key)}
+                                    />}
+                                </th>
+                            })}
                         </tr></thead>
                         <tbody>
                             {entries.map(entry => {
@@ -1902,6 +2125,8 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
                                     : entry.kind === 'directory'
                                         ? entry.directory.updatedAt
                                         : null
+                                const size = module ? displayFileSize(module.size, t('bytes')) : '—'
+                                const updatedLabel = updated ? new Date(updated).toLocaleString() : '—'
                                 return <tr
                                     key={key}
                                     className={selectedKeys.has(key) ? 'selected' : ''}
@@ -1926,11 +2151,15 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
                                             selectEntry(event, key, true)
                                         }}
                                     />}</td>
-                                    <td className="explorer-name-cell"><span className={`explorer-entry-icon ${entry.kind}`}>{entry.kind === 'module' ? '◈' : '▰'}</span><strong>{entry.kind === 'system' && entry.warning ? `⚠ ${entry.name}` : entry.name}</strong>{module?.needsManualFile && <span className="warning-dot" title={t('waitingFile')}>!</span>}</td>
-                                    <td>{type}</td>
-                                    <td><code>{entry.path}</code></td>
-                                    <td>{module ? displayFileSize(module.size, t('bytes')) : '—'}</td>
-                                    <td className={module?.needsManualFile ? 'warning' : ''}>{status}</td>
+                                    <td className="explorer-name-cell" title={entry.name}><div className="explorer-name-content">
+                                        <span className={`explorer-entry-icon ${entry.kind}`}>{entry.kind === 'module' ? '◈' : '▰'}</span>
+                                        <strong>{entry.kind === 'system' && entry.warning ? `⚠ ${entry.name}` : entry.name}</strong>
+                                        {module?.needsManualFile && <span className="warning-dot" title={t('waitingFile')}>!</span>}
+                                    </div></td>
+                                    <td title={type}><span className="explorer-cell-text">{type}</span></td>
+                                    <td title={entry.path}><code className="explorer-cell-text">{entry.path}</code></td>
+                                    <td title={size}><span className="explorer-cell-text">{size}</span></td>
+                                    <td className={module?.needsManualFile ? 'warning' : ''} title={status || undefined}><span className="explorer-cell-text">{status}</span></td>
                                     <td title={module?.type === 'File' ? t('checksumValidationHint') : undefined}>
                                         {module?.type === 'File'
                                             ? <button
@@ -1949,7 +2178,7 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
                                                 ? <span className="checksum-always-on">{t('checksumValidationAlwaysOn')}</span>
                                                 : '—'}
                                     </td>
-                                    <td>{updated ? new Date(updated).toLocaleString() : '—'}</td>
+                                    <td title={updatedLabel}><span className="explorer-cell-text">{updatedLabel}</span></td>
                                 </tr>
                             })}
                         </tbody>

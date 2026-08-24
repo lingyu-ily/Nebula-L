@@ -52,7 +52,7 @@ code, pre { font-family: 'DM Mono', monospace; }
 .sidebar nav a.active { color: #fff; background: #182236; box-shadow: inset 2px 0 var(--cyan); }
 .account { margin-top: auto; padding: 16px 10px; display: grid; gap: 8px; border-top: 1px solid var(--line); }
 .account .build-version { margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--line); }
-.content { width: min(1320px, 100%); padding: 44px clamp(24px, 4vw, 64px) 80px; }
+.content { width: min(1320px, 100%); min-width: 0; padding: 44px clamp(24px, 4vw, 64px) 80px; }
 
 .page-header { display: flex; justify-content: space-between; align-items: end; gap: 32px; margin-bottom: 30px; }
 .page-header h1 { margin: 4px 0 0; font-size: clamp(32px, 4vw, 48px); letter-spacing: -.045em; }
@@ -219,7 +219,7 @@ input:disabled { opacity: .6; }
 .danger-zone p { color: var(--muted); margin: 0; }
 .danger-button { padding: 11px 16px; color: #fff; background: #5d2036; border: 1px solid var(--danger); white-space: nowrap; }
 
-.explorer-card { position: relative; min-height: 610px; background: #101722; border: 1px solid var(--line); box-shadow: 0 18px 50px #0003; overflow: hidden; }
+.explorer-card { position: relative; width: 100%; max-width: 100%; min-width: 0; min-height: 610px; background: #101722; border: 1px solid var(--line); box-shadow: 0 18px 50px #0003; overflow: hidden; }
 .explorer-toolbar { min-height: 54px; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: #151d2a; overflow-x: auto; }
 .explorer-toolbar button { min-width: max-content; }
 .explorer-toolbar .secondary { padding: 7px 11px; }
@@ -229,36 +229,44 @@ input:disabled { opacity: .6; }
 .explorer-address { display: flex; align-items: center; gap: 7px; min-height: 48px; padding: 7px 12px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; }
 .explorer-address > button, .explorer-address span button { border: 0; background: transparent; color: #dce5f4; padding: 4px; }
 .explorer-address input { width: min(310px, 35%); margin-left: auto; padding: 8px 10px; }
-.explorer-body { min-height: 505px; display: grid; grid-template-columns: 228px minmax(0, 1fr); }
-.explorer-tree { padding: 10px 8px; border-right: 1px solid var(--line); background: #0d141f; overflow: auto; }
-.explorer-tree-row { min-width: 0; min-height: 34px; display: flex; align-items: stretch; }
+.explorer-body { height: clamp(420px, calc(100dvh - 360px), 680px); min-height: 0; display: grid; grid-template-columns: 228px minmax(0, 1fr); }
+.explorer-tree { width: 100%; max-width: 100%; min-height: 0; padding: 10px 8px; border-right: 1px solid var(--line); background: #0d141f; overflow-x: hidden; overflow-y: auto; scrollbar-gutter: stable; }
+.explorer-tree-row { width: 100%; max-width: 100%; min-width: 0; min-height: 34px; display: flex; align-items: stretch; overflow: hidden; }
 .explorer-tree-row button { min-height: 34px; border: 0; border-radius: 3px; background: transparent; font-size: 12px; }
 .tree-toggle, .tree-toggle-spacer { flex: 0 0 26px; width: 26px; }
 .tree-toggle { display: grid; place-content: center; padding: 0; color: var(--cyan); }
 .tree-toggle:hover { background: #1c293c; color: #fff; }
 .tree-toggle-spacer { display: block; }
-.tree-open { min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; padding: 6px; color: #c4cedf; text-align: left; }
+.tree-open { min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; overflow: hidden; padding: 6px; color: #c4cedf; text-align: left; }
 .tree-open:hover, .tree-open.active { background: #1c293c; color: #fff; }
 .tree-open.active { box-shadow: inset 2px 0 var(--cyan); }
 .tree-icon { flex: 0 0 14px; width: 14px; color: var(--cyan); }
-.tree-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-label { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree-warning, .warning-dot { display: inline-grid; place-content: center; width: 16px; height: 16px; margin-left: auto; border-radius: 50%; background: #533d21; color: var(--warning); font: 700 10px 'DM Mono', monospace; }
-.explorer-main { position: relative; min-width: 0; background: #0d131d; }
+.explorer-main { position: relative; width: 100%; max-width: 100%; min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; background: #0d131d; }
 .explorer-main.drag-active { box-shadow: inset 0 0 0 2px var(--cyan); }
 .explorer-drop-overlay { position: absolute; inset: 0; z-index: 4; display: grid; place-content: center; background: #10232ee8; color: var(--cyan); border: 2px dashed #55c8c1; font-size: 16px; font-weight: 700; pointer-events: none; }
 .explorer-view-options { min-height: 45px; display: flex; align-items: center; justify-content: flex-end; gap: 9px; padding: 7px 13px; color: var(--muted); font-size: 11px; border-bottom: 1px solid #1f2a3c; }
 .explorer-view-options > span { margin-right: auto; }
 .explorer-view-options label { display: flex; align-items: center; gap: 7px; }
 .explorer-view-options select { width: 120px; padding: 6px 8px; }
-.explorer-table-wrap { overflow: auto; }
-.explorer-table { min-width: 900px; }
+.explorer-table-wrap { width: 100%; max-width: 100%; min-width: 0; min-height: 0; overflow: auto; scrollbar-gutter: stable; }
+.explorer-table { min-width: 1000px; table-layout: fixed; }
 .explorer-table th { position: sticky; top: 0; z-index: 1; background: #121a26; }
-.explorer-table td { height: 51px; padding: 10px 13px; font-size: 12px; }
+.explorer-column-header { overflow: visible; }
+.explorer-column-label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.explorer-column-resizer { position: absolute; z-index: 2; top: 0; right: 0; width: 10px; height: 100%; cursor: col-resize; touch-action: none; user-select: none; }
+.explorer-column-resizer::after { position: absolute; top: 7px; right: 0; bottom: 7px; width: 1px; background: #3a4860; content: ''; }
+.explorer-column-resizer:hover::after, .explorer-column-resizer:focus-visible::after { width: 2px; background: var(--cyan); box-shadow: 0 0 8px #65e7d688; }
+.explorer-column-resizer:focus-visible { outline: 1px solid var(--cyan); outline-offset: -2px; }
+.explorer-table td { height: 51px; padding: 10px 13px; overflow: hidden; font-size: 12px; text-overflow: ellipsis; vertical-align: middle; white-space: nowrap; }
 .explorer-table th.explorer-selection-cell, .explorer-table td.explorer-selection-cell { width: 44px; padding-inline: 13px 5px; text-align: center; }
 .explorer-selection-cell input { width: 16px; height: 16px; margin: 0; accent-color: var(--cyan); }
-.explorer-table td.explorer-name-cell { display: flex; align-items: center; gap: 9px; }
+.explorer-name-content { min-width: 0; display: flex; align-items: center; gap: 9px; }
+.explorer-name-content strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.explorer-cell-text { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .explorer-table td code { color: var(--muted); font-size: 11px; }
-.explorer-table tbody tr { cursor: default; user-select: none; }
+.explorer-table tbody tr { height: 51px; cursor: default; user-select: none; }
 .explorer-table tbody tr:hover { background: #182233; }
 .explorer-table tbody tr.selected { background: #20314a; outline: 1px solid #436687; outline-offset: -1px; }
 .checksum-switch { position: relative; width: 34px; height: 19px; padding: 0; border: 1px solid #536176; border-radius: 999px; background: #273142; vertical-align: middle; }
@@ -310,7 +318,7 @@ input:disabled { opacity: .6; }
     .launcher-video-field > .wide, .launcher-video-field > .danger-link { grid-column: auto; }
     .launcher-hero-preview { min-height: 260px; aspect-ratio: auto; }
     .explorer-address { flex-wrap: wrap; }.explorer-address input { width: 100%; margin-left: 0; }
-    .explorer-body { display: block; }.explorer-tree { max-height: 170px; border-right: 0; border-bottom: 1px solid var(--line); }
+    .explorer-body { height: auto; display: block; }.explorer-tree { max-height: 170px; border-right: 0; border-bottom: 1px solid var(--line); overflow-y: auto; }.explorer-main { height: clamp(380px, 60dvh, 520px); }
 }
 
 @media (prefers-reduced-motion: reduce) {

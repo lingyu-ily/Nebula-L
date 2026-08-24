@@ -68,7 +68,7 @@ const server = {
 async function mockExplorer(
     page: Page,
     role: 'EDITOR' | 'AUDITOR' = 'EDITOR',
-    options: { failChecksumUpdate?: boolean, nestedDirectories?: boolean } = {}
+    options: { failChecksumUpdate?: boolean, nestedDirectories?: boolean, scrollEntries?: number } = {}
 ): Promise<unknown[]> {
     const mutations: unknown[] = []
     const managedProject = { ...project }
@@ -122,6 +122,24 @@ async function mockExplorer(
             path: 'resourcepacks/hd',
             createdAt: '2026-01-01T00:00:00Z',
             updatedAt: '2026-01-01T00:00:00Z'
+        })
+    }
+    for (let index = 0; index < (options.scrollEntries ?? 0); index += 1) {
+        const suffix = String(index + 1).padStart(2, '0')
+        directories.push({
+            id: `scroll-directory-${suffix}`,
+            path: `scroll-folder-${suffix}-with-a-very-long-folder-name-that-needs-truncation`,
+            createdAt: '2026-01-01T00:00:00Z',
+            updatedAt: '2026-01-01T00:00:00Z'
+        })
+        managedServer.modules.push({
+            ...server.modules[0],
+            id: `scroll-module-${suffix}`,
+            uploadId: `scroll-upload-${suffix}`,
+            displayName: `scroll-file-${suffix}-with-a-very-long-file-name.txt`,
+            fileName: `scroll-file-${suffix}-with-a-very-long-file-name.txt`,
+            relativePath: `scroll-file-${suffix}-with-a-very-long-file-name.txt`,
+            sortOrder: index + 2
         })
     }
     await page.addInitScript(() => localStorage.setItem('i18nextLng', 'en'))
@@ -334,6 +352,133 @@ test('expands and collapses the folder tree independently from navigation', asyn
     await page.reload()
     await expect(tree.getByRole('button', { name: 'Files', exact: true })).toBeVisible()
     await expect(tree.getByRole('button', { name: 'config', exact: true })).toHaveCount(0)
+})
+
+test('keeps folder and file scrolling independent with aligned table rows', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await mockExplorer(page, 'EDITOR', { scrollEntries: 30 })
+    await page.goto('/projects/project-1/servers/server-1/files')
+    await page.locator('.explorer-tree').getByRole('button', { name: 'Files', exact: true }).click()
+
+    const tree = page.getByRole('complementary', { name: 'Folder navigation' })
+    const tableWrap = page.locator('.explorer-table-wrap')
+    const scrollMetrics = async (selector: typeof tree): Promise<{
+        clientHeight: number
+        scrollHeight: number
+        clientWidth: number
+        scrollWidth: number
+        overflowY: string
+    }> => selector.evaluate(element => ({
+        clientHeight: element.clientHeight,
+        scrollHeight: element.scrollHeight,
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        overflowY: getComputedStyle(element).overflowY
+    }))
+
+    const treeMetrics = await scrollMetrics(tree)
+    const tableMetrics = await scrollMetrics(tableWrap)
+    expect(treeMetrics.overflowY).toBe('auto')
+    expect(treeMetrics.scrollHeight).toBeGreaterThan(treeMetrics.clientHeight)
+    expect(tableMetrics.overflowY).toBe('auto')
+    expect(tableMetrics.scrollHeight).toBeGreaterThan(tableMetrics.clientHeight)
+    expect(tableMetrics.scrollWidth).toBeGreaterThan(tableMetrics.clientWidth)
+
+    await tableWrap.evaluate(element => { element.scrollTop = 160 })
+    const tableScrollTop = await tableWrap.evaluate(element => element.scrollTop)
+    await tree.evaluate(element => { element.scrollTop = element.scrollHeight })
+    expect(await tree.evaluate(element => element.scrollTop)).toBeGreaterThan(0)
+    expect(await tableWrap.evaluate(element => element.scrollTop)).toBe(tableScrollTop)
+
+    const stickyOffset = await page.locator('[data-explorer-column="name"]').evaluate(header =>
+        Math.abs(header.getBoundingClientRect().top
+            - document.querySelector('.explorer-table-wrap')!.getBoundingClientRect().top))
+    expect(stickyOffset).toBeLessThanOrEqual(1)
+
+    const rowCells = page.locator('.explorer-table tbody tr').first().locator('td')
+    const cellRects = await rowCells.evaluateAll(cells => cells.map(cell => {
+        const rect = cell.getBoundingClientRect()
+        return { top: rect.top, bottom: rect.bottom, height: rect.height }
+    }))
+    expect(Math.max(...cellRects.map(rect => rect.top)) - Math.min(...cellRects.map(rect => rect.top))).toBeLessThanOrEqual(0.5)
+    expect(Math.max(...cellRects.map(rect => rect.bottom)) - Math.min(...cellRects.map(rect => rect.bottom))).toBeLessThanOrEqual(0.5)
+    expect(Math.max(...cellRects.map(rect => rect.height)) - Math.min(...cellRects.map(rect => rect.height))).toBeLessThanOrEqual(0.5)
+
+    await page.setViewportSize({ width: 480, height: 640 })
+    await expect.poll(async () => tree.evaluate(element => element.clientHeight)).toBeLessThanOrEqual(170)
+    expect((await scrollMetrics(tree)).scrollHeight).toBeGreaterThan((await scrollMetrics(tree)).clientHeight)
+    expect((await scrollMetrics(tableWrap)).scrollHeight).toBeGreaterThan((await scrollMetrics(tableWrap)).clientHeight)
+    const longTreeLabel = tree.locator('.tree-label').filter({ hasText: 'scroll-folder-30' })
+    await expect(longTreeLabel).toBeAttached()
+    expect(await longTreeLabel.evaluate(element => element.scrollWidth)).toBeGreaterThan(
+        await longTreeLabel.evaluate(element => element.clientWidth)
+    )
+})
+
+test('resizes adjacent Explorer columns accessibly and persists valid ratios', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await mockExplorer(page)
+    await page.goto('/projects/project-1/servers/server-1/files')
+
+    const table = page.locator('.explorer-table')
+    const nameHeader = page.locator('[data-explorer-column="name"]')
+    const typeHeader = page.locator('[data-explorer-column="type"]')
+    const destinationHeader = page.locator('[data-explorer-column="destination"]')
+    const handle = page.locator('[data-resize-boundary="name-type"]')
+    await expect(page.getByRole('separator')).toHaveCount(6)
+    await expect(handle).toHaveAttribute('aria-orientation', 'vertical')
+
+    const widths = async (): Promise<{ table: number, name: number, type: number, destination: number }> => ({
+        table: (await table.boundingBox())?.width ?? 0,
+        name: (await nameHeader.boundingBox())?.width ?? 0,
+        type: (await typeHeader.boundingBox())?.width ?? 0,
+        destination: (await destinationHeader.boundingBox())?.width ?? 0
+    })
+    const before = await widths()
+    const handleBox = await handle.boundingBox()
+    expect(handleBox).not.toBeNull()
+    await page.mouse.move(handleBox!.x + handleBox!.width / 2, handleBox!.y + handleBox!.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(handleBox!.x + handleBox!.width / 2 + 15, handleBox!.y + handleBox!.height / 2, { steps: 3 })
+    await page.mouse.up()
+
+    const resized = await widths()
+    expect(resized.name - before.name).toBeCloseTo(15, 0)
+    expect(resized.type - before.type).toBeCloseTo(-15, 0)
+    expect(resized.destination).toBeCloseTo(before.destination, 0)
+    expect(resized.table).toBeCloseTo(before.table, 0)
+    await expect.poll(() => page.evaluate(() => localStorage.getItem('nebula:explorer-column-widths:v1'))).not.toBeNull()
+
+    await page.reload()
+    const persisted = await widths()
+    expect(persisted.name).toBeCloseTo(resized.name, 0)
+    expect(persisted.type).toBeCloseTo(resized.type, 0)
+
+    await handle.focus()
+    await handle.press('ArrowLeft')
+    const keyboardResized = await widths()
+    expect(keyboardResized.name - persisted.name).toBeCloseTo(-10, 0)
+    expect(keyboardResized.type - persisted.type).toBeCloseTo(10, 0)
+
+    await handle.press('Shift+ArrowLeft')
+    const acceleratedResize = await widths()
+    expect(acceleratedResize.name - keyboardResized.name).toBeCloseTo(-25, 0)
+    expect(acceleratedResize.type - keyboardResized.type).toBeCloseTo(25, 0)
+
+    for (let index = 0; index < 20; index += 1) await handle.press('ArrowRight')
+    const minimumLimited = await widths()
+    expect(minimumLimited.type).toBeGreaterThanOrEqual(79.5)
+
+    await handle.dblclick()
+    const reset = await widths()
+    expect(reset.name).toBeCloseTo(before.name, 0)
+    expect(reset.type).toBeCloseTo(before.type, 0)
+
+    await page.evaluate(() => localStorage.setItem('nebula:explorer-column-widths:v1', '{"name":0}'))
+    await page.reload()
+    const fallback = await widths()
+    expect(fallback.name).toBeCloseTo(before.name, 0)
+    expect(fallback.type).toBeCloseTo(before.type, 0)
 })
 
 test('opens a server-specific Explorer page and creates a real folder', async ({ page }) => {
