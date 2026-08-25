@@ -76,8 +76,16 @@ function LoginPage(): ReactNode {
             <BuildVersion />
         </section>
         <aside className="login-art" aria-hidden="true">
-            <div className="orbit orbit-one" /><div className="orbit orbit-two" />
-            <div className="release-card"><small>RELEASE PIPELINE</small><strong>Verified</strong><span>RustFS · MariaDB · Helios</span></div>
+            <div className="nebula-scene">
+                <div className="nebula-glow" />
+                <div className="nebula-orbit nebula-orbit-one"><span /></div>
+                <div className="nebula-orbit nebula-orbit-two"><span /></div>
+                <div className="nebula-orbit nebula-orbit-three"><span /></div>
+                <div className="nebula-particles">
+                    <span /><span /><span /><span /><span /><span />
+                </div>
+                <div className="nebula-core"><span /></div>
+            </div>
         </aside>
     </main>
 }

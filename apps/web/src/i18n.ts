@@ -54,8 +54,8 @@ const en = {
 
 const zhTW = {
     translation: {
-        brand: 'Nebula 管理台',
-        tagline: '可控、可稽核的 Helios distribution 發布流程。',
+        brand: 'Nebula',
+        tagline: 'MapleCraft Launcher 發布控制台',
         buildVersionLabel: 'Nebula 版本 {{version}}，建置 {{commit}}',
         login: '登入', username: '帳號', password: '密碼', logout: '登出',
         projects: 'Distribution', analytics: 'Launcher 統計', users: '帳號管理', audit: '稽核紀錄',

@@ -6,6 +6,20 @@ test('shows the protected Nebula sign-in surface', async ({ page }) => {
     await expect(page.getByLabel(/帳號|Username/)).toBeVisible()
     await expect(page.getByLabel(/密碼|Password/)).toBeVisible()
     await expect(page.getByLabel(/Nebula 版本|Nebula version/)).toHaveText(/^v0\.1\.0 · (?:[0-9a-f]{7}|dev)$/)
+    await expect(page.locator('.nebula-scene')).toBeVisible()
+    await expect(page.locator('.nebula-orbit')).toHaveCount(3)
+    await expect(page.locator('.release-card')).toHaveCount(0)
+    await expect(page.locator('.nebula-orbit-one')).not.toHaveCSS('animation-name', 'none')
+})
+
+test('shows a static nebula when reduced motion is requested', async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.goto('/')
+
+    await expect(page.locator('.nebula-scene')).toBeVisible()
+    const animatedElements = page.locator('.nebula-glow, .nebula-core, .nebula-orbit, .nebula-particles span')
+    await expect(animatedElements).toHaveCount(11)
+    expect(await animatedElements.evaluateAll(elements => elements.every(element => getComputedStyle(element).animationName === 'none'))).toBe(true)
 })
 
 for (const viewport of [
