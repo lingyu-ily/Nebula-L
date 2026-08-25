@@ -223,7 +223,7 @@ describe('private upload verification', () => {
         }
     })
 
-    it('publishes stored uploads with server-side copy and verifies the result', async () => {
+    it('publishes stored uploads with server-side copy and verifies content when RustFS omits Cache-Control', async () => {
         const commands: unknown[] = []
         const expected = { size: 128, md5: 'a'.repeat(32), sha256: 'b'.repeat(64) }
         const storageClient = {
@@ -233,7 +233,6 @@ describe('private upload verification', () => {
                 if (command instanceof HeadObjectCommand) {
                     return {
                         ContentLength: expected.size,
-                        CacheControl: 'public, max-age=31536000, immutable',
                         Metadata: { md5: expected.md5, sha256: expected.sha256 }
                     }
                 }
@@ -262,6 +261,8 @@ describe('private upload verification', () => {
             Bucket: 'test-bucket',
             Key: 'public/test/server-builds/server-1/publish-1/mod.jar',
             CopySource: 'test-bucket/private/uploads/project%201/upload-1/payload',
+            ContentType: 'application/java-archive',
+            CacheControl: 'public, max-age=31536000, immutable',
             MetadataDirective: 'REPLACE',
             Metadata: { md5: expected.md5, sha256: expected.sha256 }
         })

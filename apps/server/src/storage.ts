@@ -325,7 +325,12 @@ export async function copyStoredUpload(
         }))
         await verifyStoredObject(
             destinationKey,
-            { ...expected, cacheControl },
+            // RustFS applies CopyObject metadata inconsistently: the copied body
+            // and custom checksums are visible, but HeadObject may omit
+            // Cache-Control. The destination key is content-addressed by the
+            // server build, so require content integrity here while continuing
+            // to request the immutable cache policy above.
+            { size: expected.size, md5: expected.md5, sha256: expected.sha256 },
             storageClient,
             bucket,
             verificationRetryDelays,
