@@ -981,7 +981,7 @@ async function buildServer(
             } catch (error) {
                 if (isStorageObjectMissingError(error) || isStorageObjectIntegrityError(error)) {
                     throw new PermanentJobError(
-                        `Published object ${logicalPath} for server ${server.name} failed RustFS verification; inspect RustFS and publish again.`
+                        `Published object ${logicalPath} for server ${server.name} failed RustFS verification: ${error.message}`
                     )
                 }
                 throw error
@@ -1120,7 +1120,7 @@ export async function publishJob(job: JobRow): Promise<void> {
     } catch (error) {
         if (isStorageObjectMissingError(error) || isStorageObjectIntegrityError(error)) {
             throw new PermanentJobError(
-                `Stable distribution for ${snapshot.name} failed RustFS verification; inspect RustFS before publishing again.`
+                `Stable distribution for ${snapshot.name} failed RustFS verification: ${error.message}`
             )
         }
         throw error
@@ -1339,7 +1339,7 @@ async function failJob(job: JobRow, error: unknown): Promise<void> {
     if (!retry) {
         const [actors] = await getPool().execute<ActorRow[]>('SELECT id, username, role FROM users WHERE id = ?', [job.created_by])
         await writeAudit(getPool(), { user: actors[0], requestId: `job:${job.id}` }, {
-            action: job.kind === 'PUBLISH' ? 'release.failed' : 'curseforge.import_failed',
+            action: job.kind === 'PUBLISH' ? 'publish.failed' : 'curseforge.import_failed',
             entityType: 'job',
             entityId: job.id,
             projectId: job.project_id,

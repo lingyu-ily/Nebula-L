@@ -53,8 +53,14 @@ export class StorageObjectMissingError extends Error {
 }
 
 export class StorageObjectIntegrityError extends Error {
-    constructor(readonly objectKey: string) {
-        super(`RustFS verification failed for ${objectKey}`)
+    constructor(
+        readonly objectKey: string,
+        readonly expected?: StoredObjectExpectation,
+        readonly actual?: StoredObjectMetadata
+    ) {
+        super(`RustFS verification failed for ${objectKey}${expected && actual
+            ? ` (expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)})`
+            : ''}`)
         this.name = 'StorageObjectIntegrityError'
     }
 }
@@ -299,7 +305,9 @@ export async function copyStoredUpload(
     expected: Pick<StoredObjectExpectation, 'size' | 'md5' | 'sha256'>,
     cacheControl = 'public, max-age=31536000, immutable',
     storageClient = getStorageClient(),
-    bucket = getConfig().rustfs.bucket
+    bucket = getConfig().rustfs.bucket,
+    verificationRetryDelays?: readonly number[],
+    wait?: (milliseconds: number) => Promise<void>
 ): Promise<StoredObject> {
     const copySource = `${bucket}/${sourceKey.split('/').map(encodeURIComponent).join('/')}`
     try {
@@ -315,7 +323,14 @@ export async function copyStoredUpload(
                 sha256: expected.sha256
             }
         }))
-        await verifyStoredObject(destinationKey, { ...expected, cacheControl }, storageClient, bucket)
+        await verifyStoredObject(
+            destinationKey,
+            { ...expected, cacheControl },
+            storageClient,
+            bucket,
+            verificationRetryDelays,
+            wait
+        )
     } catch (error) {
         await deleteObjectBestEffort(destinationKey)
         throw error
@@ -389,19 +404,28 @@ export async function verifyStoredObject(
     objectKey: string,
     expected: StoredObjectExpectation,
     storageClient = getStorageClient(),
-    bucket = getConfig().rustfs.bucket
+    bucket = getConfig().rustfs.bucket,
+    retryDelays: readonly number[] = [0, 100, 250, 500, 1000],
+    wait: (milliseconds: number) => Promise<void> = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
 ): Promise<void> {
-    const head = await headStoredObject(objectKey, storageClient, bucket)
-    const matches = storedObjectMetadataMatches({
-        contentLength: head.ContentLength == null ? undefined : Number(head.ContentLength),
-        md5: head.Metadata?.md5,
-        sha256: head.Metadata?.sha256,
-        cacheControl: head.CacheControl,
-        releaseId: head.Metadata?.['release-id']
-    }, expected)
-    if (!matches) {
-        throw new StorageObjectIntegrityError(objectKey)
+    let actual: StoredObjectMetadata | undefined
+    for (const delayMs of retryDelays) {
+        if (delayMs > 0) {
+            await wait(delayMs)
+        }
+        const head = await headStoredObject(objectKey, storageClient, bucket)
+        actual = {
+            contentLength: head.ContentLength == null ? undefined : Number(head.ContentLength),
+            md5: head.Metadata?.md5,
+            sha256: head.Metadata?.sha256,
+            cacheControl: head.CacheControl,
+            releaseId: head.Metadata?.['release-id']
+        }
+        if (storedObjectMetadataMatches(actual, expected)) {
+            return
+        }
     }
+    throw new StorageObjectIntegrityError(objectKey, expected, actual)
 }
 
 export function isNoSuchKeyError(error: unknown): boolean {

@@ -20,7 +20,8 @@ import {
     S3_COMPATIBILITY_OPTIONS,
     stageUpload,
     storedObjectMetadataMatches,
-    storedUploadMetadataMatches
+    storedUploadMetadataMatches,
+    verifyStoredObject
 } from './storage.js'
 
 describe('project object cleanup', () => {
@@ -247,7 +248,9 @@ describe('private upload verification', () => {
             expected,
             'public, max-age=31536000, immutable',
             storageClient,
-            'test-bucket'
+            'test-bucket',
+            [0],
+            () => Promise.resolve()
         )).resolves.toEqual({
             objectKey: 'public/test/server-builds/server-1/publish-1/mod.jar',
             ...expected
@@ -263,5 +266,58 @@ describe('private upload verification', () => {
             Metadata: { md5: expected.md5, sha256: expected.sha256 }
         })
         expect(commands[1]).toBeInstanceOf(HeadObjectCommand)
+    })
+
+    it('retries briefly while copied metadata becomes visible', async () => {
+        const expected = {
+            size: 128,
+            md5: 'a'.repeat(32),
+            sha256: 'b'.repeat(64),
+            cacheControl: 'public, max-age=31536000, immutable'
+        }
+        let heads = 0
+        const storageClient = {
+            send: async (command: unknown) => {
+                if (!(command instanceof HeadObjectCommand)) throw new Error('Unexpected command')
+                heads += 1
+                return {
+                    ContentLength: expected.size,
+                    CacheControl: expected.cacheControl,
+                    Metadata: heads < 3 ? {} : { md5: expected.md5, sha256: expected.sha256 }
+                }
+            }
+        } as unknown as S3Client
+        const waits: number[] = []
+
+        await expect(verifyStoredObject(
+            'public/test/server-builds/server-1/publish-1/mod.jar',
+            expected,
+            storageClient,
+            'test-bucket',
+            [0, 100, 250],
+            milliseconds => {
+                waits.push(milliseconds)
+                return Promise.resolve()
+            }
+        )).resolves.toBeUndefined()
+
+        expect(heads).toBe(3)
+        expect(waits).toEqual([100, 250])
+    })
+
+    it('reports expected and received metadata after verification retries are exhausted', async () => {
+        const expected = { size: 128, sha256: 'b'.repeat(64) }
+        const storageClient = {
+            send: async () => ({ ContentLength: 127, Metadata: {} })
+        } as unknown as S3Client
+
+        await expect(verifyStoredObject(
+            'public/test/broken.jar',
+            expected,
+            storageClient,
+            'test-bucket',
+            [0],
+            () => Promise.resolve()
+        )).rejects.toThrow(/expected.*128.*received.*127/)
     })
 })
