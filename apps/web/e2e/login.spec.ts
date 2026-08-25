@@ -9,7 +9,9 @@ test('shows the protected Nebula sign-in surface', async ({ page }) => {
     await expect(page.locator('.nebula-scene')).toBeVisible()
     await expect(page.locator('.nebula-orbit')).toHaveCount(3)
     await expect(page.locator('.release-card')).toHaveCount(0)
-    await expect(page.locator('.nebula-orbit-one')).not.toHaveCSS('animation-name', 'none')
+    expect(await page.locator('.nebula-orbit').evaluateAll(elements => elements.every(element => getComputedStyle(element).animationName === 'none'))).toBe(true)
+    await expect(page.locator('.nebula-star-field')).toHaveCount(2)
+    await expect(page.locator('.nebula-stars-near')).not.toHaveCSS('animation-name', 'none')
 })
 
 test('shows a static nebula when reduced motion is requested', async ({ page }) => {
@@ -17,8 +19,8 @@ test('shows a static nebula when reduced motion is requested', async ({ page }) 
     await page.goto('/')
 
     await expect(page.locator('.nebula-scene')).toBeVisible()
-    const animatedElements = page.locator('.nebula-glow, .nebula-core, .nebula-orbit, .nebula-particles span')
-    await expect(animatedElements).toHaveCount(11)
+    const animatedElements = page.locator('.nebula-star-field, .nebula-glow, .nebula-core, .nebula-particles span')
+    await expect(animatedElements).toHaveCount(10)
     expect(await animatedElements.evaluateAll(elements => elements.every(element => getComputedStyle(element).animationName === 'none'))).toBe(true)
 })
 

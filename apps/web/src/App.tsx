@@ -76,6 +76,8 @@ function LoginPage(): ReactNode {
             <BuildVersion />
         </section>
         <aside className="login-art" aria-hidden="true">
+            <div className="nebula-star-field nebula-stars-far" />
+            <div className="nebula-star-field nebula-stars-near" />
             <div className="nebula-scene">
                 <div className="nebula-glow" />
                 <div className="nebula-orbit nebula-orbit-one"><span /></div>
