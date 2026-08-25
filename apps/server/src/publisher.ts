@@ -14,6 +14,7 @@ import { writeAudit } from './audit.js'
 import { getConfig } from './config.js'
 import { getPool, withTransaction } from './db/index.js'
 import { PermanentJobError, shouldRetryJob } from './job-errors.js'
+import { LAUNCHER_USAGE_TIME_ZONE } from './launcher-usage.js'
 import {
     normalizeYouTubeVideoId
 } from './launcher-video.js'
@@ -1006,12 +1007,31 @@ async function buildServer(
     }
 }
 
-function assembleDistribution(snapshot: ProjectSnapshot, builds: SelectedServerBuild[]): Distribution {
+export interface PublishedDistribution extends Distribution {
+    telemetry: {
+        anonymousDailyActive: {
+            endpoint: string
+            timeZone: typeof LAUNCHER_USAGE_TIME_ZONE
+        }
+    }
+}
+
+export function buildLauncherTelemetry(appBaseUrl: string, slug: string): PublishedDistribution['telemetry'] {
+    return {
+        anonymousDailyActive: {
+            endpoint: `${appBaseUrl.replace(/\/$/, '')}/api/v1/public/launcher-presence/${encodeURIComponent(slug)}`,
+            timeZone: LAUNCHER_USAGE_TIME_ZONE
+        }
+    }
+}
+
+function assembleDistribution(snapshot: ProjectSnapshot, builds: SelectedServerBuild[]): PublishedDistribution {
     const buildByServer = new Map(builds.map(build => [build.serverId, build]))
-    const distribution: Distribution = {
+    const distribution: PublishedDistribution = {
         version: '1.0.0',
         rss: snapshot.rss,
         ...(snapshot.discord ? { discord: snapshot.discord as Distribution['discord'] } : {}),
+        telemetry: buildLauncherTelemetry(getConfig().appBaseUrl, snapshot.slug),
         servers: snapshot.servers.map(server => {
             const build = buildByServer.get(server.id)
             if (build?.sourceRevision !== server.revision) {

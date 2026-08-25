@@ -62,6 +62,14 @@ The management page displays this URL and verifies that the stable object's size
 
 When adopting this layout for an existing Launcher, deploy Nebula and publish the Distribution first. Confirm that the stable URL returns HTTP `200` before releasing a Launcher build that uses it.
 
+### Anonymous Launcher usage
+
+Published distributions include an HTTPS endpoint for a privacy-preserving daily active Launcher estimate. The Launcher sends only a random 32-byte code that rotates at midnight in `Asia/Taipei`; Nebula hashes it with the project and date, never stores the raw code, account data, device data, IP address, User-Agent, operating system, or Launcher version, and removes the daily hashes after aggregation. Aggregate counts are retained for 30 days.
+
+The public write route is `/api/v1/public/launcher-presence/*`. Nebula suppresses its own request logs for this route, but the reverse proxy can still see source IP addresses. Exclude this route from proxy access logs. For Nginx, put `access_log off;` in the location that proxies `/api/v1/public/launcher-presence/`; keep TLS and the existing upstream proxy settings enabled. The in-process rate limiter uses a normalized IP transiently for one minute and does not persist it.
+
+Statistics are available only to signed-in Nebula accounts at `/analytics`. They estimate active Launcher installations rather than people: multiple devices count separately, while repeated starts from one installation on the same Taipei day count once.
+
 Nebula writes `no-cache, must-revalidate` to the stable object and `public, max-age=31536000, immutable` to server-build objects. Confirm that the deployed RustFS version or CDN forwards the stored S3 `Cache-Control` value on anonymous responses; if it does not, apply equivalent path rules at the CDN/reverse-proxy layer.
 
 ### Local development

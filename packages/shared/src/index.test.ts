@@ -6,6 +6,7 @@ import {
     explorerMoveSchema,
     isSafeFileName,
     isSafeRelativePath,
+    launcherPresenceSchema,
     launcherUiInputSchema,
     moduleInputSchema,
     modulePatchSchema,
@@ -14,6 +15,12 @@ import {
 } from './index.js'
 
 describe('shared validation', () => {
+    it('accepts only a strict 32-byte base64url daily token', () => {
+        expect(launcherPresenceSchema.safeParse({ dailyToken: 'A'.repeat(43) }).success).toBe(true)
+        expect(launcherPresenceSchema.safeParse({ dailyToken: 'short' }).success).toBe(false)
+        expect(launcherPresenceSchema.safeParse({ dailyToken: 'A'.repeat(43), account: 'player' }).success).toBe(false)
+    })
+
     it('rejects path traversal and Windows paths', () => {
         expect(isSafeRelativePath('../secret')).toBe(false)
         expect(isSafeRelativePath('C:\\secret')).toBe(false)

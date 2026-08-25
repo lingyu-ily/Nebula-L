@@ -6,6 +6,27 @@ export type Role = z.infer<typeof roleSchema>
 export const userStatusSchema = z.enum(['ACTIVE', 'DISABLED'])
 export type UserStatus = z.infer<typeof userStatusSchema>
 
+export const launcherPresenceSchema = z.object({
+    dailyToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/)
+}).strict()
+
+export interface LauncherUsageDay {
+    date: string
+    activeLaunchers: number
+}
+
+export interface LauncherUsageResponse {
+    project: {
+        id: string
+        name: string
+        slug: string
+    }
+    timeZone: 'Asia/Taipei'
+    from: string
+    to: string
+    series: LauncherUsageDay[]
+}
+
 export const loginSchema = z.object({
     username: z.string().trim().min(1).max(64),
     password: z.string().min(1).max(1024)

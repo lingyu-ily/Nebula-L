@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 're
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Link, NavLink, Navigate, Route, Routes, useNavigate, useParams } from './router.js'
-import type { ApiUser } from '@nebula/shared'
+import type { ApiUser, LauncherUsageResponse } from '@nebula/shared'
 import {
     api,
     ApiError,
@@ -128,6 +128,7 @@ function Shell({ user, children }: { user: ApiUser, children: ReactNode }): Reac
             <Link to="/projects" className="brand"><span className="brand-dot" />{t('brand')}</Link>
             <nav>
                 <NavLink to="/projects">{t('projects')}</NavLink>
+                <NavLink to="/analytics">{t('analytics')}</NavLink>
                 {user.role === 'ADMIN' && <NavLink to="/users">{t('users')}</NavLink>}
                 <NavLink to="/audit">{t('audit')}</NavLink>
             </nav>
@@ -265,6 +266,99 @@ function ProjectsPage({ user }: { user: ApiUser }): ReactNode {
             </div>
             <ErrorNotice error={disabledProjects.error ?? restoreProject.error ?? purgeProject.error ?? retryPurge.error} />
         </details>}
+    </>
+}
+
+function formatUsageDate(date: string, language: string, includeYear = false): string {
+    return new Intl.DateTimeFormat(language, {
+        timeZone: 'Asia/Taipei',
+        month: 'short',
+        day: 'numeric',
+        ...(includeYear ? { year: 'numeric' } : {})
+    }).format(new Date(`${date}T00:00:00.000Z`))
+}
+
+function LauncherUsageChart({ usage }: { usage: LauncherUsageResponse }): ReactNode {
+    const { t, i18n } = useTranslation()
+    const width = 960
+    const height = 320
+    const padding = { top: 22, right: 22, bottom: 48, left: 58 }
+    const plotWidth = width - padding.left - padding.right
+    const plotHeight = height - padding.top - padding.bottom
+    const maximum = Math.max(1, ...usage.series.map(day => day.activeLaunchers))
+    const point = (value: number, index: number): { x: number, y: number } => ({
+        x: padding.left + index / Math.max(usage.series.length - 1, 1) * plotWidth,
+        y: padding.top + (1 - value / maximum) * plotHeight
+    })
+    const points = usage.series.map((day, index) => {
+        const position = point(day.activeLaunchers, index)
+        return `${position.x},${position.y}`
+    }).join(' ')
+    const tickIndexes = [0, 7, 14, 21, usage.series.length - 1]
+    const language = i18n.resolvedLanguage ?? 'zh-TW'
+
+    return <svg className="usage-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-labelledby="usageChartTitle usageChartDescription">
+        <title id="usageChartTitle">{t('analyticsChartTitle')}</title>
+        <desc id="usageChartDescription">{t('analyticsChartDescription', { maximum })}</desc>
+        {[0, 0.25, 0.5, 0.75, 1].map(ratio => {
+            const y = padding.top + ratio * plotHeight
+            const value = Math.round(maximum * (1 - ratio))
+            return <g key={ratio}><line className="usage-grid-line" x1={padding.left} x2={width - padding.right} y1={y} y2={y} /><text className="usage-axis-label" x={padding.left - 12} y={y + 4} textAnchor="end">{value}</text></g>
+        })}
+        <polyline className="usage-line" points={points} />
+        {tickIndexes.map(index => {
+            const day = usage.series[index]
+            if (!day) return null
+            const position = point(day.activeLaunchers, index)
+            return <text className="usage-axis-label" key={day.date} x={position.x} y={height - 16} textAnchor={index === 0 ? 'start' : index === usage.series.length - 1 ? 'end' : 'middle'}>{formatUsageDate(day.date, language)}</text>
+        })}
+        {usage.series.map((day, index) => {
+            const position = point(day.activeLaunchers, index)
+            return <circle className="usage-point" key={day.date} cx={position.x} cy={position.y} r={index === usage.series.length - 1 ? 5 : 3}>
+                <title>{formatUsageDate(day.date, language, true)}: {day.activeLaunchers}</title>
+            </circle>
+        })}
+    </svg>
+}
+
+function AnalyticsPage(): ReactNode {
+    const { t, i18n } = useTranslation()
+    const projects = useQuery({ queryKey: ['projects'], queryFn: () => api<{ items: Project[] }>('/api/v1/projects') })
+    const [projectId, setProjectId] = useState('')
+    useEffect(() => {
+        const items = projects.data?.items ?? []
+        if (items.length > 0 && !items.some(project => project.id === projectId)) {
+            setProjectId(items[0].id)
+        }
+    }, [projectId, projects.data])
+    const usage = useQuery({
+        queryKey: ['launcher-usage', projectId],
+        queryFn: () => api<LauncherUsageResponse>(`/api/v1/projects/${projectId}/launcher-usage`),
+        enabled: projectId.length > 0
+    })
+    const today = usage.data?.series.at(-1)
+    const language = i18n.resolvedLanguage ?? 'zh-TW'
+
+    return <>
+        <header className="page-header"><div><p className="eyebrow">{t('analyticsEyebrow')}</p><h1>{t('analytics')}</h1><p>{t('analyticsHint')}</p></div></header>
+        <section className="card analytics-filter">
+            <label>{t('analyticsDistribution')}<select value={projectId} disabled={projects.isLoading || (projects.data?.items.length ?? 0) === 0} onChange={event => setProjectId(event.target.value)}>
+                {projects.data?.items.map(project => <option value={project.id} key={project.id}>{project.name}</option>)}
+            </select></label>
+            <p className="muted">{t('analyticsTimeZone')}</p>
+        </section>
+        <ErrorNotice error={projects.error ?? usage.error} />
+        {!projects.isLoading && projects.data?.items.length === 0 && <div className="empty">{t('analyticsNoProjects')}</div>}
+        {usage.isLoading && projectId && <section className="card analytics-loading">{t('analyticsLoading')}</section>}
+        {usage.data && <>
+            <section className="analytics-summary">
+                <article className="card usage-today"><span>{t('analyticsToday')}</span><strong>{today?.activeLaunchers ?? 0}</strong><small>{t('analyticsEstimated')}</small></article>
+                <article className="card usage-chart-card"><div className="section-heading"><div><h2>{t('analyticsChartTitle')}</h2><p className="muted">{usage.data.project.name} · {usage.data.from} — {usage.data.to}</p></div></div><LauncherUsageChart usage={usage.data} /></article>
+            </section>
+            <details className="card usage-table"><summary>{t('analyticsTable')}</summary><div className="table-card"><table><thead><tr><th>{t('analyticsDate')}</th><th>{t('analyticsActiveLaunchers')}</th></tr></thead><tbody>
+                {[...usage.data.series].reverse().map(day => <tr key={day.date}><td>{formatUsageDate(day.date, language, true)}</td><td>{day.activeLaunchers}</td></tr>)}
+            </tbody></table></div></details>
+        </>}
     </>
 }
 
@@ -598,6 +692,7 @@ export function App(): ReactNode {
     const user = session.data.user
     return <Shell user={user}><Routes>
         <Route path="/projects" element={<ProjectsPage user={user} />} />
+        <Route path="/analytics" element={<AnalyticsPage />} />
         <Route path="/projects/:projectId" element={<ProjectPage user={user} />} />
         <Route path="/projects/:projectId/servers/new" element={<NewServerPage user={user} />} />
         <Route path="/projects/:projectId/servers/:serverId" element={<ServerRootRedirect />} />

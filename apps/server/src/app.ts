@@ -14,6 +14,11 @@ import { getConfig } from './config.js'
 import { getPool } from './db/index.js'
 import { sendProblem } from './http.js'
 import { registerAuditRoutes } from './routes/audit.js'
+import {
+    PUBLIC_LAUNCHER_PRESENCE_PREFIX,
+    registerLauncherUsageRoutes,
+    registerPublicLauncherUsageRoutes
+} from './routes/launcher-usage.js'
 import { registerProjectRoutes } from './routes/projects.js'
 import { registerReleaseRoutes } from './routes/releases.js'
 import { registerServerManagementRoutes } from './routes/server-management.js'
@@ -32,6 +37,7 @@ export async function buildApp(): Promise<FastifyInstance> {
             level: config.nodeEnv === 'production' ? 'info' : 'debug'
         },
         trustProxy: config.trustProxy,
+        disableRequestLogging: request => request.url.startsWith(PUBLIC_LAUNCHER_PRESENCE_PREFIX),
         bodyLimit: 1024 * 1024
     })
 
@@ -51,8 +57,10 @@ export async function buildApp(): Promise<FastifyInstance> {
     })
     await app.register(swaggerUi, { routePrefix: '/api/docs' })
 
-    app.addHook('onRequest', loadSession)
     app.setErrorHandler(sendProblem)
+
+    await registerPublicLauncherUsageRoutes(app)
+    app.addHook('onRequest', loadSession)
 
     app.get('/health/live', async () => ({ status: 'ok' }))
     app.get('/health/ready', async (_request, reply) => {
@@ -77,6 +85,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     await registerUploadRoutes(app)
     await registerReleaseRoutes(app)
     await registerAuditRoutes(app)
+    await registerLauncherUsageRoutes(app)
     await registerVersionCatalogRoutes(app)
 
     const webRoot = resolve(process.cwd(), 'apps', 'web', 'dist')

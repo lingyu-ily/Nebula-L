@@ -2,12 +2,14 @@ import {
     bigint,
     boolean,
     char,
+    date,
     datetime,
     index,
     int,
     json,
     mysqlEnum,
     mysqlTable,
+    primaryKey,
     text,
     uniqueIndex,
     varchar
@@ -59,6 +61,32 @@ export const projects = mysqlTable('projects', {
     createdBy: char('created_by', { length: 36 }).notNull(),
     ...timestamps
 }, table => [uniqueIndex('projects_slug_uq').on(table.slug)])
+
+export const launcherDailyPresence = mysqlTable('launcher_daily_presence', {
+    projectId: char('project_id', { length: 36 }).notNull(),
+    usageDate: date('usage_date', { mode: 'string' }).notNull(),
+    tokenHash: char('token_hash', { length: 64 }).notNull(),
+    firstSeenAt: datetime('first_seen_at', { mode: 'date', fsp: 3 }).notNull()
+}, table => [
+    primaryKey({
+        name: 'launcher_daily_presence_pk',
+        columns: [table.projectId, table.usageDate, table.tokenHash]
+    }),
+    index('launcher_daily_presence_date_idx').on(table.usageDate)
+])
+
+export const launcherDailyUsage = mysqlTable('launcher_daily_usage', {
+    projectId: char('project_id', { length: 36 }).notNull(),
+    usageDate: date('usage_date', { mode: 'string' }).notNull(),
+    activeLaunchers: bigint('active_launchers', { mode: 'number', unsigned: true }).notNull(),
+    finalizedAt: datetime('finalized_at', { mode: 'date', fsp: 3 }).notNull()
+}, table => [
+    primaryKey({
+        name: 'launcher_daily_usage_pk',
+        columns: [table.projectId, table.usageDate]
+    }),
+    index('launcher_daily_usage_date_idx').on(table.usageDate)
+])
 
 export const projectDeletionTasks = mysqlTable('project_deletion_tasks', {
     id: char('id', { length: 36 }).primaryKey(),
