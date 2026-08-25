@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto'
-import { copyFile, mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'fs/promises'
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { basename, dirname, extname, join, relative, sep } from 'path'
 import { Type, type Distribution, type Module } from 'helios-distribution-types'
@@ -14,23 +14,25 @@ import { writeAudit } from './audit.js'
 import { getConfig } from './config.js'
 import { getPool, withTransaction } from './db/index.js'
 import { PermanentJobError, shouldRetryJob } from './job-errors.js'
-import { selectReleasesForDeletion } from './release-retention.js'
 import {
-    downloadExternalVideo,
-    LauncherVideoValidationError,
-    normalizeYouTubeVideoId,
-    type StagedLauncherVideo
+    normalizeYouTubeVideoId
 } from './launcher-video.js'
 import {
-    copyJson,
-    deleteObjects,
+    copyStoredUpload,
+    deleteObjectPrefix,
     downloadToFile,
     isStorageObjectIntegrityError,
     isStorageObjectMissingError,
+    putJson,
     verifyStoredUpload,
-    uploadFile
+    uploadFile,
+    type StoredObject
 } from './storage.js'
-import { assertStableDistribution, getStableDistributionKey } from './stable-distribution.js'
+import {
+    assertStableDistribution,
+    getStableDistributionKey,
+    STABLE_CACHE_CONTROL
+} from './stable-distribution.js'
 
 interface SnapshotUpload {
     id: string
@@ -58,6 +60,7 @@ interface SnapshotModule {
 
 interface SnapshotServer {
     id: string
+    revision: number
     serverKey: string
     name: string
     description: string
@@ -130,6 +133,7 @@ interface ProjectSnapshotRow extends RowDataPacket {
 
 interface ServerSnapshotRow extends RowDataPacket {
     id: string
+    revision: number
     server_key: string
     name: string
     description: string
@@ -219,7 +223,33 @@ function parseProjectSnapshot(value: JobRow['snapshot']): ProjectSnapshot {
     if (!snapshot || typeof sourceDraftVersion !== 'number' || !Number.isInteger(sourceDraftVersion) || sourceDraftVersion < 0) {
         throw new Error('Publish snapshot does not contain a valid draft version')
     }
-    return { ...snapshot, sourceDraftVersion }
+    return {
+        ...snapshot,
+        sourceDraftVersion,
+        servers: snapshot.servers.map(server => ({ ...server, revision: server.revision ?? 0 }))
+    }
+}
+
+const PUBLISH_IO_CONCURRENCY = 8
+
+async function mapWithConcurrency<T, R>(
+    values: readonly T[],
+    concurrency: number,
+    operation: (value: T, index: number) => Promise<R>
+): Promise<R[]> {
+    const results = new Array<R>(values.length)
+    let nextIndex = 0
+    async function worker(): Promise<void> {
+        while (nextIndex < values.length) {
+            const index = nextIndex++
+            results[index] = await operation(values[index], index)
+        }
+    }
+    await Promise.all(Array.from(
+        { length: Math.min(concurrency, values.length) },
+        () => worker()
+    ))
+    return results
 }
 
 const LAUNCHER_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
@@ -319,6 +349,7 @@ export async function buildProjectSnapshot(connection: PoolConnection, projectId
         sourceDraftVersion: Number(project.draft_revision),
         servers: serverRows.map(server => ({
             id: server.id,
+            revision: Number(server.revision),
             serverKey: server.server_key,
             name: server.name,
             description: server.description,
@@ -416,7 +447,7 @@ export async function buildProjectSnapshot(connection: PoolConnection, projectId
     }
 }
 
-function validateSnapshot(snapshot: ProjectSnapshot): void {
+export function validateSnapshot(snapshot: ProjectSnapshot): void {
     if (snapshot.servers.length === 0) {
         throw new Error('A distribution must contain at least one server')
     }
@@ -424,6 +455,14 @@ function validateSnapshot(snapshot: ProjectSnapshot): void {
         throw new Error('A distribution must contain exactly one main server')
     }
     for (const server of snapshot.servers) {
+        if (!Number.isInteger(server.revision) || server.revision < 0) {
+            throw new PermanentJobError(`Server ${server.name} has an invalid revision`)
+        }
+        if (server.launcherUi.video?.source === 'external') {
+            throw new PermanentJobError(
+                `Server ${server.name} uses an external launcher video; remove it or replace it with an upload or YouTube video before publishing.`
+            )
+        }
         const destinations = new Set<string>()
         for (const module of server.modules) {
             if (module.needsManualFile || !module.upload) {
@@ -500,25 +539,23 @@ export function snapshotAssetError(
 }
 
 export async function preflightSnapshotUploads(snapshot: ProjectSnapshot): Promise<void> {
-    for (const server of snapshot.servers) {
-        if (server.icon) {
-            await verifySnapshotAsset(server, 'icon', server.icon)
-        }
-        if (server.launcherUi.background) {
-            await verifySnapshotAsset(server, 'launcher background', server.launcherUi.background)
-        }
-        if (server.launcherUi.logo) {
-            await verifySnapshotAsset(server, 'launcher logo', server.launcherUi.logo)
-        }
-        if (server.launcherUi.video?.source === 'upload') {
-            await verifySnapshotAsset(server, 'launcher video', server.launcherUi.video.upload)
-        }
-        for (const module of server.modules) {
-            if (module.upload) {
-                await verifySnapshotAsset(server, `module "${module.displayName}"`, module.upload)
-            }
-        }
-    }
+    const assets = snapshot.servers.flatMap(server => [
+        ...(server.icon ? [{ server, label: 'icon', upload: server.icon }] : []),
+        ...(server.launcherUi.background
+            ? [{ server, label: 'launcher background', upload: server.launcherUi.background }]
+            : []),
+        ...(server.launcherUi.logo
+            ? [{ server, label: 'launcher logo', upload: server.launcherUi.logo }]
+            : []),
+        ...(server.launcherUi.video?.source === 'upload'
+            ? [{ server, label: 'launcher video', upload: server.launcherUi.video.upload }]
+            : []),
+        ...server.modules.flatMap(module => module.upload
+            ? [{ server, label: `module "${module.displayName}"`, upload: module.upload }]
+            : [])
+    ])
+    await mapWithConcurrency(assets, PUBLISH_IO_CONCURRENCY, asset =>
+        verifySnapshotAsset(asset.server, asset.label, asset.upload))
 }
 
 interface MaterializedLauncherVideo {
@@ -534,14 +571,13 @@ interface MaterializedLauncherVideo {
         videoId: string
     }
     upload?: SnapshotUpload
-    staged?: StagedLauncherVideo
 }
 
 function launcherVideoExtension(mimeType: string): '.mp4' | '.webm' {
     return mimeType.toLowerCase() === 'video/webm' ? '.webm' : '.mp4'
 }
 
-async function prepareLauncherVideo(server: SnapshotServer): Promise<MaterializedLauncherVideo | null> {
+function prepareLauncherVideo(server: SnapshotServer): MaterializedLauncherVideo | null {
     const video = server.launcherUi.video
     if (!video) {
         return null
@@ -563,121 +599,107 @@ async function prepareLauncherVideo(server: SnapshotServer): Promise<Materialize
             }
         }
     }
-    try {
-        const staged = await downloadExternalVideo(video.url, getConfig().maxUploadBytes)
-        const relativePath = `launcher/video${staged.extension}`
-        return {
-            relativePath,
-            staged,
-            descriptor: {
-                type: 'file',
-                url: relativePath,
-                sha256: staged.sha256,
-                size: staged.size,
-                contentType: staged.contentType
-            }
-        }
-    } catch (error) {
-        if (error instanceof LauncherVideoValidationError) {
-            throw new PermanentJobError(`Server ${server.name} launcher video is invalid: ${error.message}`)
-        }
-        throw error
-    }
+    throw new PermanentJobError(
+        `Server ${server.name} uses an external launcher video; replace it with an upload or YouTube video.`
+    )
 }
 
 async function materializeSnapshot(snapshot: ProjectSnapshot, root: string): Promise<void> {
-    const stagedVideos: StagedLauncherVideo[] = []
-    try {
-        await mkdir(join(root, 'meta'), { recursive: true })
-        await writeFile(join(root, 'meta', 'distrometa.json'), JSON.stringify({
-            meta: {
-                rss: snapshot.rss,
-                ...(snapshot.discord ? { discord: snapshot.discord } : {})
-            }
-        }, null, 2))
-        for (const server of snapshot.servers) {
-            const serverRoot = join(root, 'servers', `${server.serverKey}-${server.minecraftVersion}`)
-            const video = await prepareLauncherVideo(server)
-            if (video?.staged) {
-                stagedVideos.push(video.staged)
-            }
-            const backgroundPath = server.launcherUi.background
-                ? `launcher/background${launcherImageExtension(server.launcherUi.background)}`
-                : undefined
-            const logoPath = server.launcherUi.logo
-                ? `launcher/logo${launcherImageExtension(server.launcherUi.logo)}`
-                : undefined
-            const hero = {
-                ...(backgroundPath ? { background: backgroundPath } : {}),
-                ...(logoPath ? { logo: logoPath } : {}),
-                ...(video ? { video: video.descriptor } : {}),
-                ...(server.launcherUi.eyebrow ? { eyebrow: server.launcherUi.eyebrow } : {}),
-                ...(server.launcherUi.title ? { title: server.launcherUi.title } : {}),
-                ...(server.launcherUi.tagline ? { tagline: server.launcherUi.tagline } : {})
-            }
-            const launcherUi = {
-                ...(Object.keys(hero).length > 0 ? { hero } : {}),
-                ...(server.launcherUi.rss ? { news: { rss: server.launcherUi.rss } } : {})
-            }
-            await Promise.all([
-                mkdir(join(serverRoot, 'files'), { recursive: true }),
-                mkdir(join(serverRoot, 'libraries'), { recursive: true }),
-                ...(backgroundPath || logoPath || video?.relativePath ? [mkdir(join(serverRoot, 'launcher'), { recursive: true })] : [])
-            ])
-            if (server.forgeVersion) {
-                for (const value of ['required', 'optionalon', 'optionaloff']) {
-                    await mkdir(join(serverRoot, 'forgemods', value), { recursive: true })
-                }
-            }
-            if (server.fabricVersion) {
-                for (const value of ['required', 'optionalon', 'optionaloff']) {
-                    await mkdir(join(serverRoot, 'fabricmods', value), { recursive: true })
-                }
-            }
-            const untrackedFiles = Object.entries(Object.groupBy(server.untrackedRules, rule => rule.appliesTo))
-                .map(([appliesTo, values]) => ({ appliesTo: [appliesTo], patterns: values!.map(value => value.pattern) }))
-            await writeFile(join(serverRoot, 'servermeta.json'), JSON.stringify({
-                meta: {
-                    version: server.serverVersion,
-                    name: server.name,
-                    description: server.description,
-                    icon: '',
-                    address: server.address,
-                    ...(server.discord ? { discord: server.discord } : {}),
-                    mainServer: server.mainServer,
-                    autoconnect: server.autoconnect,
-                    ...(server.javaOptions ? { javaOptions: server.javaOptions } : {}),
-                    ...(Object.keys(launcherUi).length > 0 ? { ui: launcherUi } : {})
-                },
-                ...(server.forgeVersion ? { forge: { version: server.forgeVersion } } : {}),
-                ...(server.fabricVersion ? { fabric: { version: server.fabricVersion } } : {}),
-                untrackedFiles
-            }, null, 2))
-            if (server.icon) {
-                const iconExtension = ['.png', '.jpg', '.jpeg'].includes(extname(server.icon.originalName).toLowerCase())
-                    ? extname(server.icon.originalName).toLowerCase()
-                    : '.png'
-                await downloadToFile(server.icon.objectKey, join(serverRoot, `icon${iconExtension}`))
-            }
-            if (server.launcherUi.background && backgroundPath) {
-                await downloadToFile(server.launcherUi.background.objectKey, join(serverRoot, ...backgroundPath.split('/')))
-            }
-            if (server.launcherUi.logo && logoPath) {
-                await downloadToFile(server.launcherUi.logo.objectKey, join(serverRoot, ...logoPath.split('/')))
-            }
-            if (video?.relativePath && video.upload) {
-                await downloadToFile(video.upload.objectKey, join(serverRoot, ...video.relativePath.split('/')))
-            } else if (video?.relativePath && video.staged) {
-                await copyFile(video.staged.path, join(serverRoot, ...video.relativePath.split('/')))
-            }
-            for (const module of server.modules) {
-                const destination = join(serverRoot, getModuleRelativePath(module))
-                await mkdir(dirname(destination), { recursive: true })
-                await downloadToFile(module.upload!.objectKey, destination)
+    await mkdir(join(root, 'meta'), { recursive: true })
+    await writeFile(join(root, 'meta', 'distrometa.json'), JSON.stringify({
+        meta: {
+            rss: snapshot.rss,
+            ...(snapshot.discord ? { discord: snapshot.discord } : {})
+        }
+    }, null, 2))
+    for (const server of snapshot.servers) {
+        const serverRoot = join(root, 'servers', `${server.serverKey}-${server.minecraftVersion}`)
+        const video = prepareLauncherVideo(server)
+        const backgroundPath = server.launcherUi.background
+            ? `launcher/background${launcherImageExtension(server.launcherUi.background)}`
+            : undefined
+        const logoPath = server.launcherUi.logo
+            ? `launcher/logo${launcherImageExtension(server.launcherUi.logo)}`
+            : undefined
+        const hero = {
+            ...(backgroundPath ? { background: backgroundPath } : {}),
+            ...(logoPath ? { logo: logoPath } : {}),
+            ...(video ? { video: video.descriptor } : {}),
+            ...(server.launcherUi.eyebrow ? { eyebrow: server.launcherUi.eyebrow } : {}),
+            ...(server.launcherUi.title ? { title: server.launcherUi.title } : {}),
+            ...(server.launcherUi.tagline ? { tagline: server.launcherUi.tagline } : {})
+        }
+        const launcherUi = {
+            ...(Object.keys(hero).length > 0 ? { hero } : {}),
+            ...(server.launcherUi.rss ? { news: { rss: server.launcherUi.rss } } : {})
+        }
+        await Promise.all([
+            mkdir(join(serverRoot, 'files'), { recursive: true }),
+            mkdir(join(serverRoot, 'libraries'), { recursive: true }),
+            ...(backgroundPath || logoPath || video?.relativePath ? [mkdir(join(serverRoot, 'launcher'), { recursive: true })] : [])
+        ])
+        if (server.forgeVersion) {
+            for (const value of ['required', 'optionalon', 'optionaloff']) {
+                await mkdir(join(serverRoot, 'forgemods', value), { recursive: true })
             }
         }
-    } finally {
-        await Promise.all(stagedVideos.map(video => rm(video.directory, { recursive: true, force: true })))
+        if (server.fabricVersion) {
+            for (const value of ['required', 'optionalon', 'optionaloff']) {
+                await mkdir(join(serverRoot, 'fabricmods', value), { recursive: true })
+            }
+        }
+        const untrackedFiles = Object.entries(Object.groupBy(server.untrackedRules, rule => rule.appliesTo))
+            .map(([appliesTo, values]) => ({ appliesTo: [appliesTo], patterns: values!.map(value => value.pattern) }))
+        await writeFile(join(serverRoot, 'servermeta.json'), JSON.stringify({
+            meta: {
+                version: server.serverVersion,
+                name: server.name,
+                description: server.description,
+                icon: '',
+                address: server.address,
+                ...(server.discord ? { discord: server.discord } : {}),
+                mainServer: server.mainServer,
+                autoconnect: server.autoconnect,
+                ...(server.javaOptions ? { javaOptions: server.javaOptions } : {}),
+                ...(Object.keys(launcherUi).length > 0 ? { ui: launcherUi } : {})
+            },
+            ...(server.forgeVersion ? { forge: { version: server.forgeVersion } } : {}),
+            ...(server.fabricVersion ? { fabric: { version: server.fabricVersion } } : {}),
+            untrackedFiles
+        }, null, 2))
+        const downloads: (() => Promise<void>)[] = []
+        if (server.icon) {
+            const iconExtension = ['.png', '.jpg', '.jpeg'].includes(extname(server.icon.originalName).toLowerCase())
+                ? extname(server.icon.originalName).toLowerCase()
+                : '.png'
+            downloads.push(() => downloadToFile(server.icon!.objectKey, join(serverRoot, `icon${iconExtension}`)))
+        }
+        if (server.launcherUi.background && backgroundPath) {
+            downloads.push(() => downloadToFile(
+                server.launcherUi.background!.objectKey,
+                join(serverRoot, ...backgroundPath.split('/'))
+            ))
+        }
+        if (server.launcherUi.logo && logoPath) {
+            downloads.push(() => downloadToFile(
+                server.launcherUi.logo!.objectKey,
+                join(serverRoot, ...logoPath.split('/'))
+            ))
+        }
+        if (video?.relativePath && video.upload) {
+            downloads.push(() => downloadToFile(
+                video.upload!.objectKey,
+                join(serverRoot, ...video.relativePath!.split('/'))
+            ))
+        }
+        for (const module of server.modules) {
+            const destination = join(serverRoot, getModuleRelativePath(module))
+            downloads.push(async () => {
+                await mkdir(dirname(destination), { recursive: true })
+                await downloadToFile(module.upload!.objectKey, destination)
+            })
+        }
+        await mapWithConcurrency(downloads, PUBLISH_IO_CONCURRENCY, download => download())
     }
 }
 
@@ -796,33 +818,217 @@ async function heartbeat(jobId: string, progress: number): Promise<void> {
     )
 }
 
-async function persistRelease(
-    job: JobRow,
-    snapshot: ProjectSnapshot,
-    distributionKey: string,
-    files: { logicalPath: string, objectKey: string, size: number, md5: string, sha256: string }[]
-): Promise<void> {
-    await withTransaction(async connection => {
-        await connection.execute(
-            `INSERT INTO releases (
-                id, project_id, job_id, draft_revision, status, snapshot, distribution_key,
-                created_by, created_at, activated_at
-             ) VALUES (?, ?, ?, ?, 'AVAILABLE', ?, ?, ?, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))
-             ON DUPLICATE KEY UPDATE snapshot = VALUES(snapshot), distribution_key = VALUES(distribution_key)`,
-            [job.id, job.project_id, job.id, snapshot.sourceDraftVersion, JSON.stringify(snapshot), distributionKey, job.created_by]
-        )
-        await connection.execute('DELETE FROM release_files WHERE release_id = ?', [job.id])
-        for (const file of files) {
-            await connection.execute(
-                `INSERT INTO release_files (release_id, logical_path, object_key, size, md5, sha256)
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [job.id, file.logicalPath, file.objectKey, file.size, file.md5, file.sha256]
-            )
-        }
-    })
+type ServerSpec = Distribution['servers'][number]
+
+interface ServerBuildRow extends RowDataPacket {
+    id: string
+    project_id: string
+    server_id: string
+    source_revision: number
+    spec: ServerSpec | string
+    object_prefix: string
 }
 
-export async function activateRelease(job: JobRow, snapshot: ProjectSnapshot): Promise<number> {
+export interface SelectedServerBuild {
+    id: string
+    serverId: string
+    sourceRevision: number
+    spec: ServerSpec
+    objectPrefix: string
+}
+
+export interface ServerBuildSelection {
+    reused: SelectedServerBuild[]
+    dirtyServerIds: string[]
+}
+
+function serverRootName(server: SnapshotServer): string {
+    return `${server.serverKey}-${server.minecraftVersion}`
+}
+
+export function getServerBuildObjectPrefix(slug: string, serverId: string, publishJobId: string): string {
+    return `public/${slug}/server-builds/${serverId}/${publishJobId}`
+}
+
+function iconRelativePath(server: SnapshotServer): string | null {
+    if (!server.icon) return null
+    const extension = ['.png', '.jpg', '.jpeg'].includes(extname(server.icon.originalName).toLowerCase())
+        ? extname(server.icon.originalName).toLowerCase()
+        : '.png'
+    return `servers/${serverRootName(server)}/icon${extension}`
+}
+
+function sourceUploadsByLogicalPath(server: SnapshotServer): Map<string, SnapshotUpload> {
+    const root = `servers/${serverRootName(server)}`
+    const entries: [string, SnapshotUpload][] = []
+    const add = (path: string | null | undefined, upload: SnapshotUpload | null | undefined): void => {
+        if (path && upload) entries.push([normalizedArtifactPath(path), upload])
+    }
+    add(iconRelativePath(server), server.icon)
+    add(
+        server.launcherUi.background
+            ? `${root}/launcher/background${launcherImageExtension(server.launcherUi.background)}`
+            : null,
+        server.launcherUi.background
+    )
+    add(
+        server.launcherUi.logo
+            ? `${root}/launcher/logo${launcherImageExtension(server.launcherUi.logo)}`
+            : null,
+        server.launcherUi.logo
+    )
+    if (server.launcherUi.video?.source === 'upload') {
+        add(
+            `${root}/launcher/video${launcherVideoExtension(server.launcherUi.video.upload.mimeType)}`,
+            server.launcherUi.video.upload
+        )
+    }
+    for (const module of server.modules) {
+        add(`${root}/${normalizedArtifactPath(getModuleRelativePath(module))}`, module.upload)
+    }
+    return new Map(entries)
+}
+
+function parseServerBuild(row: ServerBuildRow): SelectedServerBuild {
+    const spec = parseJson(row.spec)
+    if (!spec) {
+        throw new PermanentJobError(`Cached server build ${row.id} has no server spec`)
+    }
+    const sourceRevision = Number(row.source_revision)
+    if (!Number.isInteger(sourceRevision) || sourceRevision < 0) {
+        throw new PermanentJobError(`Cached server build ${row.id} has an invalid source revision`)
+    }
+    return {
+        id: row.id,
+        serverId: row.server_id,
+        sourceRevision,
+        spec,
+        objectPrefix: row.object_prefix
+    }
+}
+
+async function loadServerBuilds(projectId: string): Promise<SelectedServerBuild[]> {
+    const [rows] = await getPool().execute<ServerBuildRow[]>(
+        `SELECT id, project_id, server_id, source_revision, spec, object_prefix
+         FROM server_builds WHERE project_id = ?`,
+        [projectId]
+    )
+    return rows.map(parseServerBuild)
+}
+
+export function selectReusableServerBuilds(
+    snapshot: ProjectSnapshot,
+    builds: readonly SelectedServerBuild[]
+): ServerBuildSelection {
+    const cacheByRevision = new Map(builds.map(build => [
+        `${build.serverId}:${build.sourceRevision}`,
+        build
+    ]))
+    const reused: SelectedServerBuild[] = []
+    const dirtyServerIds: string[] = []
+    for (const server of snapshot.servers) {
+        const cached = cacheByRevision.get(`${server.id}:${server.revision}`)
+        const expectedServerId = ServerStructure.getEffectiveId(
+            server.serverKey,
+            new MinecraftVersion(server.minecraftVersion)
+        )
+        if (cached?.spec.id === expectedServerId) {
+            reused.push(cached)
+        } else {
+            dirtyServerIds.push(server.id)
+        }
+    }
+    return { reused, dirtyServerIds }
+}
+
+async function buildServer(
+    job: JobRow,
+    snapshot: ProjectSnapshot,
+    server: SnapshotServer
+): Promise<SelectedServerBuild> {
+    const workspace = await mkdtemp(join(tmpdir(), 'nebula-server-build-'))
+    const objectPrefix = getServerBuildObjectPrefix(snapshot.slug, server.id, job.id)
+    const publicBase = `${getConfig().rustfs.publicBaseUrl}/${objectPrefix}/`
+    const singleServerSnapshot = { ...snapshot, servers: [server] }
+    try {
+        await preflightSnapshotUploads(singleServerSnapshot)
+        await materializeSnapshot(singleServerSnapshot, workspace)
+        process.env.ROOT = workspace
+        process.env.BASE_URL = publicBase
+        process.env.JAVA_EXECUTABLE = getConfig().javaExecutable
+        const generated = await new DistributionStructure(workspace, publicBase, false, false).getSpecModel()
+        orderDistribution(generated, singleServerSnapshot)
+        applyChecksumValidation(generated, singleServerSnapshot)
+        const spec = generated.servers[0]
+        if (!spec) {
+            throw new PermanentJobError(`Server ${server.name} did not generate a server spec`)
+        }
+
+        const candidates = [
+            ...await listFiles(join(workspace, 'servers')),
+            ...await listFiles(join(workspace, 'repo'))
+        ].filter(path => basename(path) !== 'servermeta.json')
+        const sourceUploads = sourceUploadsByLogicalPath(server)
+        await mapWithConcurrency(candidates, PUBLISH_IO_CONCURRENCY, async path => {
+            const logicalPath = relative(workspace, path).split(sep).join('/')
+            const objectKey = `${objectPrefix}/${logicalPath}`
+            const source = sourceUploads.get(logicalPath)
+            try {
+                if (source) {
+                    return await copyStoredUpload(source.objectKey, objectKey, contentType(path), source)
+                }
+                return await uploadFile(path, objectKey, contentType(path))
+            } catch (error) {
+                if (isStorageObjectMissingError(error) || isStorageObjectIntegrityError(error)) {
+                    throw new PermanentJobError(
+                        `Published object ${logicalPath} for server ${server.name} failed RustFS verification; inspect RustFS and publish again.`
+                    )
+                }
+                throw error
+            }
+        })
+
+        const buildId = randomUUID()
+        await getPool().execute(
+            `INSERT INTO server_builds (
+                id, project_id, server_id, source_revision, spec, object_prefix, created_at
+             ) VALUES (?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3))
+             ON DUPLICATE KEY UPDATE id = VALUES(id), spec = VALUES(spec),
+                 object_prefix = VALUES(object_prefix), created_at = VALUES(created_at)`,
+            [buildId, snapshot.id, server.id, server.revision, JSON.stringify(spec), objectPrefix]
+        )
+        return { id: buildId, serverId: server.id, sourceRevision: server.revision, spec, objectPrefix }
+    } catch (error) {
+        await deleteObjectPrefix(`${objectPrefix}/`).catch(() => undefined)
+        throw error
+    } finally {
+        await rm(workspace, { recursive: true, force: true })
+    }
+}
+
+function assembleDistribution(snapshot: ProjectSnapshot, builds: SelectedServerBuild[]): Distribution {
+    const buildByServer = new Map(builds.map(build => [build.serverId, build]))
+    const distribution: Distribution = {
+        version: '1.0.0',
+        rss: snapshot.rss,
+        ...(snapshot.discord ? { discord: snapshot.discord as Distribution['discord'] } : {}),
+        servers: snapshot.servers.map(server => {
+            const build = buildByServer.get(server.id)
+            if (build?.sourceRevision !== server.revision) {
+                throw new PermanentJobError(`Server ${server.name} does not have a build for revision ${server.revision}`)
+            }
+            return build.spec
+        })
+    }
+    orderDistribution(distribution, snapshot)
+    return distribution
+}
+
+export async function activatePublish(
+    job: JobRow,
+    snapshot: ProjectSnapshot,
+    stableObject: StoredObject
+): Promise<number> {
     return withTransaction(async connection => {
         const [actors] = await connection.query<ActorRow[]>('SELECT id, username, role FROM users WHERE id = ?', [job.created_by])
         const actor = actors[0]
@@ -833,42 +1039,31 @@ export async function activateRelease(job: JobRow, snapshot: ProjectSnapshot): P
         if (!projects[0]) {
             throw new Error('Project not found')
         }
-        const [releases] = await connection.query<(RowDataPacket & { release_revision: number | null })[]>(
-            'SELECT release_revision FROM releases WHERE id = ? AND project_id = ? FOR UPDATE',
-            [job.id, job.project_id]
-        )
-        if (!releases[0]) {
-            throw new Error('Release not found')
-        }
-        const releaseRevision = releases[0].release_revision == null
-            ? Number(projects[0].release_revision) + 1
-            : Number(releases[0].release_revision)
+        const releaseRevision = Number(projects[0].release_revision) + 1
         await connection.execute(
-            'UPDATE releases SET status = \'AVAILABLE\' WHERE project_id = ? AND status = \'ACTIVE\' AND id <> ?',
-            [job.project_id, job.id]
-        )
-        await connection.execute(
-            `UPDATE releases SET release_revision = ?, status = 'ACTIVE', activated_at = UTC_TIMESTAMP(3)
-             WHERE id = ?`,
-            [releaseRevision, job.id]
-        )
-        await connection.execute(
-            `UPDATE projects SET release_revision = GREATEST(release_revision, ?), active_release_id = ?,
-             updated_at = UTC_TIMESTAMP(3) WHERE id = ?`,
-            [releaseRevision, job.id, job.project_id]
+            `UPDATE projects SET release_revision = ?, active_release_id = ?, stable_distribution_size = ?,
+             stable_distribution_sha256 = ?, updated_at = UTC_TIMESTAMP(3) WHERE id = ?`,
+            [releaseRevision, job.id, stableObject.size, stableObject.sha256, job.project_id]
         )
         await connection.execute('UPDATE servers SET published_once = TRUE WHERE project_id = ?', [job.project_id])
+        const result = {
+            releaseRevision,
+            currentPublishId: job.id,
+            distributionKey: stableObject.objectKey,
+            size: stableObject.size,
+            sha256: stableObject.sha256
+        }
         await connection.execute(
-            `UPDATE jobs SET status = 'SUCCEEDED', progress = 100, completed_at = UTC_TIMESTAMP(3),
+            `UPDATE jobs SET status = 'SUCCEEDED', progress = 100, result = ?, completed_at = UTC_TIMESTAMP(3),
              heartbeat_at = UTC_TIMESTAMP(3), error_text = NULL WHERE id = ?`,
-            [job.id]
+            [JSON.stringify(result), job.id]
         )
         await writeAudit(connection, {
             user: actor,
             requestId: `job:${job.id}`
         }, {
-            action: 'release.published',
-            entityType: 'release',
+            action: 'publish.succeeded',
+            entityType: 'publish',
             entityId: job.id,
             projectId: job.project_id,
             after: { releaseRevision, sourceDraftVersion: snapshot.sourceDraftVersion }
@@ -877,81 +1072,64 @@ export async function activateRelease(job: JobRow, snapshot: ProjectSnapshot): P
     })
 }
 
-async function enforceRetention(projectId: string, activeReleaseId: string): Promise<void> {
-    const [retainedReleases] = await getPool().execute<(RowDataPacket & { id: string, distribution_key: string })[]>(
-        `SELECT id, distribution_key FROM releases
-         WHERE project_id = ? AND release_revision IS NOT NULL AND status IN ('ACTIVE','AVAILABLE')
-         ORDER BY activated_at DESC, id DESC`,
-        [projectId]
-    )
-    const oldReleases = selectReleasesForDeletion(retainedReleases, activeReleaseId)
-    for (const release of oldReleases) {
-        const [fileRows] = await getPool().execute<(RowDataPacket & { object_key: string })[]>(
-            'SELECT object_key FROM release_files WHERE release_id = ?',
-            [release.id]
-        )
-        await deleteObjects([...fileRows.map(row => row.object_key), release.distribution_key])
-        await getPool().execute(
-            'UPDATE releases SET status = \'DELETED\', deleted_at = UTC_TIMESTAMP(3) WHERE id = ? AND id <> ?',
-            [release.id, activeReleaseId]
-        )
+async function cleanupObsoleteServerBuilds(
+    projectId: string,
+    retainedBuildIds: Set<string>
+): Promise<void> {
+    const builds = await loadServerBuilds(projectId)
+    const obsolete = builds.filter(build => !retainedBuildIds.has(build.id))
+    for (const build of obsolete) {
+        await deleteObjectPrefix(`${build.objectPrefix}/`)
+        await getPool().execute('DELETE FROM server_builds WHERE id = ?', [build.id])
     }
 }
 
 export async function publishJob(job: JobRow): Promise<void> {
     const snapshot = parseProjectSnapshot(job.snapshot)
     validateSnapshot(snapshot)
-    const workspace = await mkdtemp(join(tmpdir(), 'nebula-publish-'))
-    const releasePrefix = `public/${snapshot.slug}/releases/${job.id}`
-    const releasePublicBase = `${getConfig().rustfs.publicBaseUrl}/${releasePrefix}/`
+    await heartbeat(job.id, 5)
+    const cachedBuilds = await loadServerBuilds(snapshot.id)
+    const selection = selectReusableServerBuilds(snapshot, cachedBuilds)
+    const reusableByServer = new Map(selection.reused.map(build => [build.serverId, build]))
+    const selectedBuilds: SelectedServerBuild[] = []
+    for (let index = 0; index < snapshot.servers.length; index++) {
+        const server = snapshot.servers[index]
+        const cached = reusableByServer.get(server.id)
+        selectedBuilds.push(cached ?? await buildServer(job, snapshot, server))
+        await heartbeat(job.id, 10 + Math.floor((index + 1) / snapshot.servers.length * 70))
+    }
+
+    const distribution = assembleDistribution(snapshot, selectedBuilds)
+    await heartbeat(job.id, 85)
+    const distributionKey = getStableDistributionKey(snapshot.slug)
+    let stableObject: StoredObject
     try {
-        await heartbeat(job.id, 10)
-        await preflightSnapshotUploads(snapshot)
-        await materializeSnapshot(snapshot, workspace)
-        await heartbeat(job.id, 35)
-        process.env.ROOT = workspace
-        process.env.BASE_URL = releasePublicBase
-        process.env.JAVA_EXECUTABLE = getConfig().javaExecutable
-        const distribution = await new DistributionStructure(workspace, releasePublicBase, false, false).getSpecModel()
-        orderDistribution(distribution, snapshot)
-        applyChecksumValidation(distribution, snapshot)
-        const distributionPath = join(workspace, 'distribution.json')
-        await writeFile(distributionPath, JSON.stringify(distribution, null, 2))
-        await heartbeat(job.id, 60)
-        const candidates = [
-            distributionPath,
-            ...await listFiles(join(workspace, 'servers')),
-            ...await listFiles(join(workspace, 'repo'))
-        ].filter(path => basename(path) !== 'servermeta.json')
-        const releaseFiles: { logicalPath: string, objectKey: string, size: number, md5: string, sha256: string }[] = []
-        for (let index = 0; index < candidates.length; index++) {
-            const path = candidates[index]
-            const logicalPath = relative(workspace, path).split(sep).join('/')
-            const objectKey = `${releasePrefix}/${logicalPath}`
-            const stored = await uploadFile(path, objectKey, contentType(path))
-            releaseFiles.push({ logicalPath, ...stored })
-            await heartbeat(job.id, 60 + Math.floor((index + 1) / candidates.length * 25))
-        }
-        const distributionKey = `${releasePrefix}/distribution.json`
-        await persistRelease(job, snapshot, distributionKey, releaseFiles)
-        const releaseDistribution = releaseFiles.find(file => file.logicalPath === 'distribution.json')
-        if (!releaseDistribution) {
-            throw new Error('Generated release does not contain distribution.json')
-        }
-        await copyJson(distributionKey, getStableDistributionKey(snapshot.slug), 'no-cache, must-revalidate', job.id)
+        stableObject = await putJson(
+            distributionKey,
+            distribution,
+            STABLE_CACHE_CONTROL,
+            { 'release-id': job.id }
+        )
         await assertStableDistribution(snapshot.slug, job.id, {
             distributionKey,
-            size: releaseDistribution.size,
-            sha256: releaseDistribution.sha256,
-            cacheControl: 'no-cache, must-revalidate',
+            size: stableObject.size,
+            sha256: stableObject.sha256,
+            cacheControl: STABLE_CACHE_CONTROL,
             releaseId: job.id
         })
-        await activateRelease(job, snapshot)
-        // The release is already public and versioned; retention cleanup cannot make that publish fail retroactively.
-        await enforceRetention(snapshot.id, job.id).catch(() => undefined)
-    } finally {
-        await rm(workspace, { recursive: true, force: true })
+    } catch (error) {
+        if (isStorageObjectMissingError(error) || isStorageObjectIntegrityError(error)) {
+            throw new PermanentJobError(
+                `Stable distribution for ${snapshot.name} failed RustFS verification; inspect RustFS before publishing again.`
+            )
+        }
+        throw error
     }
+    await activatePublish(job, snapshot, stableObject)
+    await cleanupObsoleteServerBuilds(
+        snapshot.id,
+        new Set(selectedBuilds.map(build => build.id))
+    ).catch(() => undefined)
 }
 
 interface ImportedArtifact {

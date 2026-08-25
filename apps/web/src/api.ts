@@ -14,7 +14,8 @@ export interface Project {
     discord: null | { clientId: string, smallImageText: string, smallImageKey: string }
     draftVersion: number
     releaseRevision: number | null
-    activeReleaseId: string | null
+    published: boolean
+    currentPublishId: string | null
     launcherUrl: string
     stableDistributionReady?: boolean
     disabled: boolean
@@ -136,16 +137,6 @@ export interface Job {
     result: unknown
     error: string | null
     createdAt: string
-}
-
-export interface Release {
-    id: string
-    releaseRevision: number
-    status: 'ACTIVE' | 'AVAILABLE' | 'DELETED'
-    retained: boolean
-    createdBy: string
-    createdAt: string
-    activatedAt: string
 }
 
 export interface AuditLog {

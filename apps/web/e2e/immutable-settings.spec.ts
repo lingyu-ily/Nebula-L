@@ -9,7 +9,8 @@ const project = {
     discord: null,
     draftVersion: 3,
     releaseRevision: 3,
-    activeReleaseId: 'release-1',
+    published: true,
+    currentPublishId: 'publish-1',
     launcherUrl: 'https://cdn.example.com/published-distribution/distribution.json',
     stableDistributionReady: true,
     disabled: false
@@ -70,7 +71,7 @@ async function mockPublishedSettings(page: Page): Promise<{
             await fulfillJson(route, { updated: true, draftVersion: 4 })
         } else if (path === '/api/v1/version-catalog/minecraft') {
             await fulfillJson(route, { versions: [], stale: false })
-        } else if (path.endsWith('/jobs') || path.endsWith('/releases')) {
+        } else if (path.endsWith('/jobs')) {
             await fulfillJson(route, { items: [] })
         } else {
             await route.fulfill({ status: 404, contentType: 'application/problem+json', body: '{"title":"Not Found"}' })

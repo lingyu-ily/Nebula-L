@@ -13,7 +13,7 @@ describe('stable distribution addressing', () => {
         expect(url).not.toContain('/releases/')
     })
 
-    it('keeps the stable key separate from immutable releases', () => {
+    it('keeps the stable key independent from server builds', () => {
         expect(getStableDistributionKey('maplecraftlauncher'))
             .toBe('public/maplecraftlauncher/distribution.json')
     })

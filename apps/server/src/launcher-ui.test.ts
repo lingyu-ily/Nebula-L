@@ -45,7 +45,7 @@ describe('launcher UI distribution output', () => {
 
         const servers = await new ServerStructure(
             root,
-            'https://cdn.example/releases/release-1/',
+            'https://cdn.example/server-builds/adventure-1.20.1/build-1/',
             false,
             false
         ).getSpecModel()
@@ -53,8 +53,8 @@ describe('launcher UI distribution output', () => {
         expect(servers).toHaveLength(1)
         expect(servers[0].ui).toEqual({
             hero: {
-                background: 'https://cdn.example/releases/release-1/servers/adventure-1.20.1/launcher/background.webp',
-                logo: 'https://cdn.example/releases/release-1/servers/adventure-1.20.1/launcher/logo.png',
+                background: 'https://cdn.example/server-builds/adventure-1.20.1/build-1/servers/adventure-1.20.1/launcher/background.webp',
+                logo: 'https://cdn.example/server-builds/adventure-1.20.1/build-1/servers/adventure-1.20.1/launcher/logo.png',
                 eyebrow: 'MAPLECRAFT SERVER',
                 title: 'Adventure World',
                 tagline: 'Build your own empire.'

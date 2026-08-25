@@ -9,7 +9,8 @@ const project = {
     discord: null,
     draftVersion: 7,
     releaseRevision: null,
-    activeReleaseId: null,
+    published: false,
+    currentPublishId: null,
     launcherUrl: 'https://cdn.example.com/ordered-distribution/distribution.json',
     stableDistributionReady: false,
     disabled: false
@@ -101,7 +102,7 @@ async function mockProject(page: Page, options: {
             await fulfillJson(route, { id: '68fc3c94-96c3-4b03-87d2-46f85e661aae', draftVersion: draftVersion + 1 })
         } else if (path === '/api/v1/version-catalog/minecraft') {
             await fulfillJson(route, { versions: [], stale: false })
-        } else if (path.endsWith('/jobs') || path.endsWith('/releases')) {
+        } else if (path.endsWith('/jobs')) {
             await fulfillJson(route, { items: [] })
         } else {
             await route.fulfill({ status: 404, contentType: 'application/problem+json', body: '{"title":"Not Found"}' })

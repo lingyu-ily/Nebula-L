@@ -6,6 +6,7 @@ import { join } from 'path'
 import { Readable, Transform } from 'stream'
 import { pipeline } from 'stream/promises'
 import {
+    CopyObjectCommand,
     DeleteObjectsCommand,
     GetObjectCommand,
     HeadBucketCommand,
@@ -291,7 +292,48 @@ export async function uploadFile(
     return { objectKey, ...hashes }
 }
 
-export async function putJson(objectKey: string, value: unknown, cacheControl: string): Promise<void> {
+export async function copyStoredUpload(
+    sourceKey: string,
+    destinationKey: string,
+    contentType: string,
+    expected: Pick<StoredObjectExpectation, 'size' | 'md5' | 'sha256'>,
+    cacheControl = 'public, max-age=31536000, immutable',
+    storageClient = getStorageClient(),
+    bucket = getConfig().rustfs.bucket
+): Promise<StoredObject> {
+    const copySource = `${bucket}/${sourceKey.split('/').map(encodeURIComponent).join('/')}`
+    try {
+        await storageClient.send(new CopyObjectCommand({
+            Bucket: bucket,
+            Key: destinationKey,
+            CopySource: copySource,
+            ContentType: contentType,
+            CacheControl: cacheControl,
+            MetadataDirective: 'REPLACE',
+            Metadata: {
+                md5: expected.md5 ?? '',
+                sha256: expected.sha256
+            }
+        }))
+        await verifyStoredObject(destinationKey, { ...expected, cacheControl }, storageClient, bucket)
+    } catch (error) {
+        await deleteObjectBestEffort(destinationKey)
+        throw error
+    }
+    return {
+        objectKey: destinationKey,
+        size: expected.size,
+        md5: expected.md5 ?? '',
+        sha256: expected.sha256
+    }
+}
+
+export async function putJson(
+    objectKey: string,
+    value: unknown,
+    cacheControl: string,
+    metadata: Record<string, string> = {}
+): Promise<StoredObject> {
     const body = Buffer.from(JSON.stringify(value, null, 2))
     const md5 = createHash('md5').update(body).digest('hex')
     const sha256 = createHash('sha256').update(body).digest('hex')
@@ -302,8 +344,16 @@ export async function putJson(objectKey: string, value: unknown, cacheControl: s
         ContentType: 'application/json; charset=utf-8',
         ContentLength: body.length,
         CacheControl: cacheControl,
-        Metadata: { md5, sha256 }
+        Metadata: { md5, sha256, ...metadata }
     }))
+    await verifyStoredObject(objectKey, {
+        size: body.length,
+        md5,
+        sha256,
+        cacheControl,
+        releaseId: metadata['release-id']
+    })
+    return { objectKey, size: body.length, md5, sha256 }
 }
 
 export async function copyJson(
@@ -337,9 +387,11 @@ export async function copyJson(
 
 export async function verifyStoredObject(
     objectKey: string,
-    expected: StoredObjectExpectation
+    expected: StoredObjectExpectation,
+    storageClient = getStorageClient(),
+    bucket = getConfig().rustfs.bucket
 ): Promise<void> {
-    const head = await headStoredObject(objectKey)
+    const head = await headStoredObject(objectKey, storageClient, bucket)
     const matches = storedObjectMetadataMatches({
         contentLength: head.ContentLength == null ? undefined : Number(head.ContentLength),
         md5: head.Metadata?.md5,
@@ -391,10 +443,14 @@ export async function retryNoSuchKey<T>(
     throw missingError
 }
 
-async function headStoredObject(objectKey: string): Promise<HeadObjectCommandOutput> {
+async function headStoredObject(
+    objectKey: string,
+    storageClient = getStorageClient(),
+    bucket = getConfig().rustfs.bucket
+): Promise<HeadObjectCommandOutput> {
     try {
-        return await retryNoSuchKey(() => getStorageClient().send(new HeadObjectCommand({
-            Bucket: getConfig().rustfs.bucket,
+        return await retryNoSuchKey(() => storageClient.send(new HeadObjectCommand({
+            Bucket: bucket,
             Key: objectKey
         })))
     } catch (error) {

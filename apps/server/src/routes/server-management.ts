@@ -38,7 +38,6 @@ interface ProjectRow extends RowDataPacket {
     discord: unknown
     draft_revision: number
     release_revision: number
-    active_release_revision?: number | null
     active_release_id: string | null
     disabled: number
     created_at: Date
@@ -119,8 +118,9 @@ function mapProject(row: ProjectRow): Record<string, unknown> {
         rss: row.rss,
         discord: row.discord,
         draftVersion: Number(row.draft_revision),
-        releaseRevision: row.active_release_revision == null ? null : Number(row.active_release_revision),
-        activeReleaseId: row.active_release_id,
+        releaseRevision: row.active_release_id == null ? null : Number(row.release_revision),
+        published: row.active_release_id != null,
+        currentPublishId: row.active_release_id,
         launcherUrl: getLauncherUrl(row.slug),
         disabled: Boolean(row.disabled),
         createdAt: row.created_at,
@@ -270,6 +270,18 @@ function directoryParent(path: string): string {
     return path.split('/').slice(0, -1).join('/')
 }
 
+async function bumpServerAndProject(
+    connection: PoolConnection,
+    projectId: string,
+    serverId: string
+): Promise<void> {
+    await connection.execute(
+        'UPDATE servers SET revision = revision + 1, updated_at = UTC_TIMESTAMP(3) WHERE id = ? AND project_id = ?',
+        [serverId, projectId]
+    )
+    await bumpProject(connection, projectId)
+}
+
 function pathBaseName(path: string): string {
     return path.split('/').at(-1)!
 }
@@ -306,10 +318,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
     }, async request => {
         const { projectId, serverId } = request.params as { projectId: string, serverId: string }
         const [projectRows] = await getPool().execute<ProjectRow[]>(
-            `SELECT p.*, active.release_revision AS active_release_revision
-             FROM projects p
-             LEFT JOIN releases active ON active.id = p.active_release_id
-             WHERE p.id = ? AND p.disabled = FALSE`,
+            'SELECT * FROM projects WHERE id = ? AND disabled = FALSE',
             [projectId]
         )
         const project = projectRows[0]
@@ -407,7 +416,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
                     throw new HttpError(409, 'Directory already exists')
                 }
             }
-            await bumpProject(connection, projectId)
+            await bumpServerAndProject(connection, projectId, serverId)
             await writeAudit(connection, auditContextFromRequest(request), {
                 action: 'directory.created',
                 entityType: 'directory',
@@ -507,7 +516,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
                     [value.nextPath, fileNameFromPath(value.nextPath), value.row.id]
                 )
             }
-            await bumpProject(connection, projectId)
+            await bumpServerAndProject(connection, projectId, serverId)
             await writeAudit(connection, auditContextFromRequest(request), {
                 action: 'directory.moved',
                 entityType: 'directory',
@@ -573,7 +582,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
             }
             deletedDirectories = subtree.length
             deletedModules = modules.length
-            await bumpProject(connection, projectId)
+            await bumpServerAndProject(connection, projectId, serverId)
             await writeAudit(connection, auditContextFromRequest(request), {
                 action: 'directory.deleted',
                 entityType: 'directory',
@@ -708,7 +717,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
             movedEntries = selection.directoryRoots.length + explicitModuleRoots.length
             movedDirectories = directoryMoves.length
             movedModules = moduleMoves.length
-            await bumpProject(connection, projectId)
+            await bumpServerAndProject(connection, projectId, serverId)
             await writeAudit(connection, auditContextFromRequest(request), {
                 action: 'explorer.entries_moved',
                 entityType: 'server',
@@ -779,7 +788,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
             }
             deletedDirectories = directoriesToDelete.length
             deletedModules = modulesToDelete.length
-            await bumpProject(connection, projectId)
+            await bumpServerAndProject(connection, projectId, serverId)
             await writeAudit(connection, auditContextFromRequest(request), {
                 action: 'explorer.entries_deleted',
                 entityType: 'server',
@@ -870,7 +879,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
                     moduleRecordId
                 ]
             )
-            await bumpProject(connection, projectId)
+            await bumpServerAndProject(connection, projectId, serverId)
             await writeAudit(connection, auditContextFromRequest(request), {
                 action: 'module.metadata_updated',
                 entityType: 'module',
@@ -946,7 +955,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
                  manual_url = NULL, updated_at = UTC_TIMESTAMP(3) WHERE id = ?`,
                 [upload.id, fileName, moduleRecordId]
             )
-            await bumpProject(connection, projectId)
+            await bumpServerAndProject(connection, projectId, serverId)
             await writeAudit(connection, auditContextFromRequest(request), {
                 action: 'module.file_replaced',
                 entityType: 'module',

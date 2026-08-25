@@ -2,10 +2,17 @@ import { mkdtemp, readdir, rm, stat } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { Readable } from 'stream'
-import { DeleteObjectsCommand, ListObjectsV2Command, type S3Client } from '@aws-sdk/client-s3'
+import {
+    CopyObjectCommand,
+    DeleteObjectsCommand,
+    HeadObjectCommand,
+    ListObjectsV2Command,
+    type S3Client
+} from '@aws-sdk/client-s3'
 import { describe, expect, it } from 'vitest'
 import {
     deleteObjectPrefix,
+    copyStoredUpload,
     isNoSuchKeyError,
     PRIVATE_UPLOAD_CONTENT_TYPE,
     privateUploadObjectKey,
@@ -76,11 +83,11 @@ describe('project object cleanup', () => {
     })
 })
 
-describe('release object layout', () => {
-    it('keeps stable and immutable paths separate', () => {
+describe('incremental server-build object layout', () => {
+    it('keeps stable and server-build paths separate', () => {
         const slug = 'production-pack'
-        const release = '0b61e959-5299-429b-bfcb-9b213f9c89fb'
-        expect(`public/${slug}/releases/${release}/distribution.json`)
+        const publish = '0b61e959-5299-429b-bfcb-9b213f9c89fb'
+        expect(`public/${slug}/server-builds/server-1/${publish}/mods/example.jar`)
             .not.toBe(`public/${slug}/distribution.json`)
     })
 })
@@ -213,5 +220,48 @@ describe('private upload verification', () => {
         } finally {
             await rm(root, { recursive: true, force: true })
         }
+    })
+
+    it('publishes stored uploads with server-side copy and verifies the result', async () => {
+        const commands: unknown[] = []
+        const expected = { size: 128, md5: 'a'.repeat(32), sha256: 'b'.repeat(64) }
+        const storageClient = {
+            send: async (command: unknown) => {
+                commands.push(command)
+                if (command instanceof CopyObjectCommand) return {}
+                if (command instanceof HeadObjectCommand) {
+                    return {
+                        ContentLength: expected.size,
+                        CacheControl: 'public, max-age=31536000, immutable',
+                        Metadata: { md5: expected.md5, sha256: expected.sha256 }
+                    }
+                }
+                throw new Error('Unexpected command')
+            }
+        } as unknown as S3Client
+
+        await expect(copyStoredUpload(
+            'private/uploads/project 1/upload-1/payload',
+            'public/test/server-builds/server-1/publish-1/mod.jar',
+            'application/java-archive',
+            expected,
+            'public, max-age=31536000, immutable',
+            storageClient,
+            'test-bucket'
+        )).resolves.toEqual({
+            objectKey: 'public/test/server-builds/server-1/publish-1/mod.jar',
+            ...expected
+        })
+
+        const copy = commands[0] as CopyObjectCommand
+        expect(copy).toBeInstanceOf(CopyObjectCommand)
+        expect(copy.input).toMatchObject({
+            Bucket: 'test-bucket',
+            Key: 'public/test/server-builds/server-1/publish-1/mod.jar',
+            CopySource: 'test-bucket/private/uploads/project%201/upload-1/payload',
+            MetadataDirective: 'REPLACE',
+            Metadata: { md5: expected.md5, sha256: expected.sha256 }
+        })
+        expect(commands[1]).toBeInstanceOf(HeadObjectCommand)
     })
 })

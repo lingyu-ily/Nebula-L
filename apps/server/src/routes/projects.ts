@@ -15,8 +15,7 @@ import {
     LAUNCHER_VIDEO_TYPES,
     detectLauncherVideoHeader,
     LauncherVideoValidationError,
-    normalizeYouTubeVideoId,
-    validateExternalVideoUrl
+    normalizeYouTubeVideoId
 } from '../launcher-video.js'
 import { getStoredObject } from '../storage.js'
 import { isCompleteServerOrder } from '../server-order.js'
@@ -39,7 +38,6 @@ interface ProjectRow extends RowDataPacket {
     discord: unknown
     draft_revision: number
     release_revision: number
-    active_release_revision?: number | null
     active_release_id: string | null
     disabled: number
     disabled_at: Date | null
@@ -120,8 +118,9 @@ function mapProject(row: ProjectRow): Record<string, unknown> {
         rss: row.rss,
         discord: row.discord,
         draftVersion: Number(row.draft_revision),
-        releaseRevision: row.active_release_revision == null ? null : Number(row.active_release_revision),
-        activeReleaseId: row.active_release_id,
+        releaseRevision: row.active_release_id == null ? null : Number(row.release_revision),
+        published: row.active_release_id != null,
+        currentPublishId: row.active_release_id,
         disabled: Boolean(row.disabled),
         disabledAt: row.disabled_at,
         createdAt: row.created_at,
@@ -280,6 +279,18 @@ async function replaceUntrackedRules(
     }
 }
 
+async function bumpServerAndProject(
+    connection: PoolConnection,
+    projectId: string,
+    serverId: string
+): Promise<void> {
+    await connection.execute(
+        'UPDATE servers SET revision = revision + 1, updated_at = UTC_TIMESTAMP(3) WHERE id = ? AND project_id = ?',
+        [serverId, projectId]
+    )
+    await bumpProject(connection, projectId)
+}
+
 async function lockDisabledProject(connection: PoolConnection, projectId: string, expectedDraftVersion: number): Promise<ProjectRow> {
     const [rows] = await connection.query<ProjectRow[]>('SELECT * FROM projects WHERE id = ? FOR UPDATE', [projectId])
     const project = rows[0]
@@ -320,18 +331,14 @@ async function assertLauncherImageUploads(
 async function assertLauncherVideo(
     connection: PoolConnection,
     projectId: string,
-    video: { source: 'upload', uploadId: string } | { source: 'external' | 'youtube', url: string } | null
+    video: { source: 'upload', uploadId: string } | { source: 'youtube', url: string } | null
 ): Promise<void> {
     if (!video) {
         return
     }
     if (video.source !== 'upload') {
         try {
-            if (video.source === 'external') {
-                validateExternalVideoUrl(video.url)
-            } else {
-                normalizeYouTubeVideoId(video.url)
-            }
+            normalizeYouTubeVideoId(video.url)
         } catch (error) {
             if (error instanceof LauncherVideoValidationError) {
                 throw new HttpError(400, 'Invalid launcher video', error.message)
@@ -380,26 +387,20 @@ async function assertLauncherVideo(
 export async function registerProjectRoutes(app: FastifyInstance): Promise<void> {
     app.get('/api/v1/projects', { preHandler: requireRole('ADMIN', 'EDITOR', 'AUDITOR') }, async () => {
         const [rows] = await getPool().query<ProjectRow[]>(
-            `SELECT p.*, active.release_revision AS active_release_revision
-             FROM projects p
-             LEFT JOIN releases active ON active.id = p.active_release_id
-             WHERE p.disabled = FALSE ORDER BY p.name`
+            'SELECT * FROM projects WHERE disabled = FALSE ORDER BY name'
         )
         return { items: rows.map(mapProject) }
     })
 
     app.get('/api/v1/projects/disabled', { preHandler: requireRole('ADMIN') }, async () => {
         const [rows] = await getPool().query<DisabledProjectRow[]>(
-            `SELECT p.*,
-                    active.release_revision AS active_release_revision,
-                    d.id AS deletion_id,
+            `SELECT p.*, d.id AS deletion_id,
                     d.status AS deletion_status,
                     d.attempts AS deletion_attempts,
                     d.max_attempts AS deletion_max_attempts,
                     d.error_text AS deletion_error,
                     d.created_at AS deletion_requested_at
              FROM projects p
-             LEFT JOIN releases active ON active.id = p.active_release_id
              LEFT JOIN project_deletion_tasks d ON d.project_id = p.id
              WHERE p.disabled = TRUE
              ORDER BY p.disabled_at DESC, p.name, p.id`
@@ -422,10 +423,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
     app.get('/api/v1/projects/:projectId', { preHandler: requireRole('ADMIN', 'EDITOR', 'AUDITOR') }, async request => {
         const { projectId } = request.params as { projectId: string }
         const [projectRows] = await getPool().execute<ProjectRow[]>(
-            `SELECT p.*, active.release_revision AS active_release_revision
-             FROM projects p
-             LEFT JOIN releases active ON active.id = p.active_release_id
-             WHERE p.id = ? AND p.disabled = FALSE`,
+            'SELECT * FROM projects WHERE id = ? AND disabled = FALSE',
             [projectId]
         )
         const project = projectRows[0]
@@ -672,7 +670,11 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                 )
                 const nextSortOrder = Number(serverOrder[0]?.next_order ?? 0)
                 if (parsed.data.mainServer) {
-                    await connection.execute('UPDATE servers SET main_server = FALSE WHERE project_id = ?', [projectId])
+                    await connection.execute(
+                        `UPDATE servers SET main_server = FALSE, revision = revision + 1,
+                         updated_at = UTC_TIMESTAMP(3) WHERE project_id = ? AND main_server = TRUE`,
+                        [projectId]
+                    )
                 }
                 await connection.execute(
                     `INSERT INTO servers (
@@ -772,7 +774,11 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                 throw new HttpError(409, 'Published server ID is immutable')
             }
             if (parsed.data.mainServer) {
-                await connection.execute('UPDATE servers SET main_server = FALSE WHERE project_id = ? AND id <> ?', [projectId, serverId])
+                await connection.execute(
+                    `UPDATE servers SET main_server = FALSE, revision = revision + 1,
+                     updated_at = UTC_TIMESTAMP(3) WHERE project_id = ? AND id <> ? AND main_server = TRUE`,
+                    [projectId, serverId]
+                )
             }
             await connection.execute(
                 `UPDATE servers SET server_key = ?, name = ?, description = ?, minecraft_version = ?,
@@ -874,7 +880,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                 throw new HttpError(404, 'Server not found')
             }
             await connection.execute('DELETE FROM servers WHERE id = ?', [serverId])
-            await bumpProject(connection, projectId)
+            await bumpServerAndProject(connection, projectId, serverId)
             await writeAudit(connection, auditContextFromRequest(request), {
                 action: 'server.deleted',
                 entityType: 'server',
@@ -942,7 +948,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                     parsed.data.optionalMode, parsed.data.sortOrder, parsed.data.validateChecksum
                 ]
             )
-            await bumpProject(connection, projectId)
+            await bumpServerAndProject(connection, projectId, serverId)
             await writeAudit(connection, auditContextFromRequest(request), {
                 action: 'module.created',
                 entityType: 'module',
@@ -1010,7 +1016,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                     relativePath, parsed.data.optionalMode, parsed.data.sortOrder, parsed.data.validateChecksum, moduleId
                 ]
             )
-            await bumpProject(connection, projectId)
+            await bumpServerAndProject(connection, projectId, serverId)
             await writeAudit(connection, auditContextFromRequest(request), {
                 action: 'module.updated',
                 entityType: 'module',
@@ -1041,7 +1047,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
             if (result.affectedRows === 0) {
                 throw new HttpError(404, 'Module not found')
             }
-            await bumpProject(connection, projectId)
+            await bumpServerAndProject(connection, projectId, serverId)
             await writeAudit(connection, auditContextFromRequest(request), {
                 action: 'module.deleted',
                 entityType: 'module',

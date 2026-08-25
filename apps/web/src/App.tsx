@@ -14,8 +14,7 @@ import {
     type Job,
     type PaginatedResponse,
     type Project,
-    type ProjectDetail,
-    type Release
+    type ProjectDetail
 } from './api.js'
 import {
     NewServerPage,
@@ -221,7 +220,7 @@ function ProjectsPage({ user }: { user: ApiUser }): ReactNode {
         </details>}
         <div className="project-grid">
             {projects.data?.items.map(project => <Link className="project-card" to={`/projects/${project.id}`} key={project.id}>
-                <div className="project-card-top"><span className={`status-dot ${project.activeReleaseId ? 'online' : ''}`} /><span>{project.activeReleaseId ? t('active') : t('draft')}</span></div>
+                <div className="project-card-top"><span className={`status-dot ${project.published ? 'online' : ''}`} /><span>{project.published ? t('active') : t('draft')}</span></div>
                 <h2>{project.name}</h2><p>{project.description || project.slug}</p>
                 <footer><code>/{project.slug}</code><span>{project.releaseRevision == null ? t('notPublished') : `${t('revision')} ${project.releaseRevision}`}</span></footer>
             </Link>)}
@@ -295,7 +294,7 @@ function ProjectSettings({ detail, canEdit }: { detail: ProjectDetail, canEdit: 
     return <section className="card"><h2>{t('projectSettings')}</h2>
         <form className="form-grid" onSubmit={submit}>
             <label>{t('name')}<input name="name" defaultValue={detail.project.name} disabled={!canEdit} required /></label>
-            <label>{t('slug')}<input name="slug" defaultValue={detail.project.slug} disabled={!canEdit || Boolean(detail.project.activeReleaseId)} required /></label>
+            <label>{t('slug')}<input name="slug" defaultValue={detail.project.slug} disabled={!canEdit || detail.project.published} required /></label>
             <label className="wide">{t('description')}<textarea name="description" defaultValue={detail.project.description} disabled={!canEdit} /></label>
             <label className="wide">{t('rss')}<input name="rss" type="url" defaultValue={detail.project.rss} disabled={!canEdit} /></label>
             <label>{t('discordClient')}<input name="discordClientId" defaultValue={detail.project.discord?.clientId} disabled={!canEdit} /></label>
@@ -315,17 +314,17 @@ function LauncherPanel({ project }: { project: Project }): ReactNode {
         setCopied(true)
         window.setTimeout(() => setCopied(false), 2000)
     }
-    const status = !project.activeReleaseId
+    const status = !project.published
         ? t('launcherNotPublished')
         : project.stableDistributionReady
             ? t('launcherReady')
             : t('launcherUnavailable')
-    return <section className={`card launcher-card ${project.activeReleaseId && !project.stableDistributionReady ? 'launcher-warning' : ''}`}>
+    return <section className={`card launcher-card ${project.published && !project.stableDistributionReady ? 'launcher-warning' : ''}`}>
         <div className="section-heading"><div><h2>{t('launcherDistribution')}</h2><p className="muted">{t('launcherDistributionHint')}</p></div>
             <span className={`pill ${project.stableDistributionReady ? 'result-success' : ''}`}>{status}</span>
         </div>
         <div className="launcher-url-row"><code>{project.launcherUrl}</code><button type="button" className="secondary" onClick={() => void copyUrl()}>{copied ? t('copied') : t('copyUrl')}</button></div>
-        <dl className="launcher-meta"><div><dt>{t('activeReleaseId')}</dt><dd><code>{project.activeReleaseId ?? '—'}</code></dd></div></dl>
+        <dl className="launcher-meta"><div><dt>{t('currentPublishId')}</dt><dd><code>{project.currentPublishId ?? '—'}</code></dd></div></dl>
     </section>
 }
 
@@ -456,69 +455,39 @@ function ReleasePanel({ project, canEdit }: { project: Project, canEdit: boolean
     const { t } = useTranslation()
     const queryClient = useQueryClient()
     const [jobPage, setJobPage] = useState(0)
-    const [releasePage, setReleasePage] = useState(0)
     const jobs = useQuery({
         queryKey: ['jobs', project.id, jobPage],
         queryFn: () => api<PaginatedResponse<Job>>(`/api/v1/projects/${project.id}/jobs?limit=${HISTORY_PAGE_SIZE}&offset=${jobPage * HISTORY_PAGE_SIZE}`),
         refetchInterval: jobPage === 0 ? 3000 : false
-    })
-    const releases = useQuery({
-        queryKey: ['releases', project.id, releasePage],
-        queryFn: () => api<PaginatedResponse<Release>>(`/api/v1/projects/${project.id}/releases?limit=${HISTORY_PAGE_SIZE}&offset=${releasePage * HISTORY_PAGE_SIZE}`),
-        refetchInterval: releasePage === 0 ? 5000 : false
     })
     const latestSuccessfulPublishId = jobs.data?.items.find(job =>
         job.kind === 'PUBLISH' && job.status === 'SUCCEEDED'
     )?.id
     useEffect(() => {
         if (!latestSuccessfulPublishId) return
-        setReleasePage(0)
         void queryClient.invalidateQueries({ queryKey: ['projects'] })
         void queryClient.invalidateQueries({ queryKey: ['project', project.id] })
-        void queryClient.invalidateQueries({ queryKey: ['releases', project.id] })
     }, [latestSuccessfulPublishId, project.id, queryClient])
     const retry = useMutation({ mutationFn: (id: string) => api(`/api/v1/jobs/${id}/retry`, { method: 'POST' }), onSuccess: () => void jobs.refetch() })
-    const activate = useMutation({
-        mutationFn: (id: string) => api(`/api/v1/projects/${project.id}/releases/${id}/activate`, { method: 'POST' }),
-        onSuccess: () => {
-            setReleasePage(0)
-            void queryClient.invalidateQueries({ queryKey: ['releases', project.id] })
-            void queryClient.invalidateQueries({ queryKey: ['project', project.id] })
-        }
-    })
-    return <div className="two-column">
-        <section className="card"><h2>{t('jobs')}</h2>{jobs.data?.items.map(job => <div className="timeline-row" key={job.id}>
-            <span className={`job-state state-${job.status.toLowerCase()}`} />
-            <div><strong>{job.kind}</strong><small>{new Date(job.createdAt).toLocaleString()} · {t('attempts')} {job.attempts}/{job.maxAttempts}</small>{job.error && <p className="error-text">{job.error}</p>}</div>
-            <span>{job.status === 'RUNNING'
-                ? `${job.progress}%`
-                : job.status === 'FAILED'
-                    ? `${job.status} · ${job.progress}%`
-                    : job.status}</span>
-            {canEdit && job.status === 'FAILED' && <button className="text-button" onClick={() => retry.mutate(job.id)}>{t('retry')}</button>}
-        </div>)}{jobs.data?.items.length === 0 && <div className="empty">{t('noRecords')}</div>}
-        <HistoryPagination
-            label={t('jobsPagination')}
-            page={jobPage}
-            hasMore={jobs.data?.hasMore ?? false}
-            onPrevious={() => setJobPage(current => Math.max(0, current - 1))}
-            onNext={() => setJobPage(current => current + 1)}
-        /></section>
-        <section className="card"><h2>{t('releases')}</h2>{releases.data?.items.map(release => <div className="timeline-row" key={release.id}>
-            <span className={`job-state ${release.status === 'ACTIVE' ? 'state-succeeded' : ''}`} />
-            <div><strong>r{release.releaseRevision}</strong><small>{new Date(release.activatedAt).toLocaleString()} · {release.createdBy}</small></div>
-            <span className="pill">{release.status}</span>
-            {canEdit && release.retained && release.status !== 'ACTIVE' && <button className="text-button" onClick={() => window.confirm(t('confirmRollback')) && activate.mutate(release.id)}>{t('rollback')}</button>}
-        </div>)}{releases.data?.items.length === 0 && <div className="empty">{t('noRecords')}</div>}
-        <HistoryPagination
-            label={t('releasesPagination')}
-            page={releasePage}
-            hasMore={releases.data?.hasMore ?? false}
-            onPrevious={() => setReleasePage(current => Math.max(0, current - 1))}
-            onNext={() => setReleasePage(current => current + 1)}
-        /></section>
-        <ErrorNotice error={jobs.error ?? releases.error ?? retry.error ?? activate.error} />
-    </div>
+    return <section className="card"><h2>{t('jobs')}</h2>{jobs.data?.items.map(job => <div className="timeline-row" key={job.id}>
+        <span className={`job-state state-${job.status.toLowerCase()}`} />
+        <div><strong>{job.kind}</strong><small>{new Date(job.createdAt).toLocaleString()} · {t('attempts')} {job.attempts}/{job.maxAttempts}</small>{job.error && <p className="error-text">{job.error}</p>}</div>
+        <span>{job.status === 'RUNNING'
+            ? `${job.progress}%`
+            : job.status === 'FAILED'
+                ? `${job.status} · ${job.progress}%`
+                : job.status}</span>
+        {canEdit && job.status === 'FAILED' && <button className="text-button" onClick={() => retry.mutate(job.id)}>{t('retry')}</button>}
+    </div>)}{jobs.data?.items.length === 0 && <div className="empty">{t('noRecords')}</div>}
+    <HistoryPagination
+        label={t('jobsPagination')}
+        page={jobPage}
+        hasMore={jobs.data?.hasMore ?? false}
+        onPrevious={() => setJobPage(current => Math.max(0, current - 1))}
+        onNext={() => setJobPage(current => current + 1)}
+    />
+    <ErrorNotice error={jobs.error ?? retry.error} />
+    </section>
 }
 
 function ProjectPage({ user }: { user: ApiUser }): ReactNode {

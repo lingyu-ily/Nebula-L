@@ -20,7 +20,8 @@ interface MockProject {
     discord: null
     draftVersion: number
     releaseRevision: null
-    activeReleaseId: null
+    published: false
+    currentPublishId: null
     launcherUrl: string
     disabled: boolean
     disabledAt: string | null
@@ -45,7 +46,8 @@ function project(id: string, name: string, deletion: MockDeletion | null = null)
         discord: null,
         draftVersion: 7,
         releaseRevision: null,
-        activeReleaseId: null,
+        published: false,
+        currentPublishId: null,
         launcherUrl: `https://cdn.example.com/${id}/distribution.json`,
         disabled: true,
         disabledAt: '2026-08-23T01:00:00Z',

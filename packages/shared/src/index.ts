@@ -64,7 +64,6 @@ export const launcherUiInputSchema = z.object({
     logoUploadId: z.uuid().nullable().default(null),
     video: z.discriminatedUnion('source', [
         z.object({ source: z.literal('upload'), uploadId: z.uuid() }),
-        z.object({ source: z.literal('external'), url: z.url().max(2048) }),
         z.object({ source: z.literal('youtube'), url: z.url().max(2048) })
     ]).nullable().default(null),
     eyebrow: z.string().trim().max(128).default(''),

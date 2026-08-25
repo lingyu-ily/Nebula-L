@@ -143,6 +143,9 @@ describe('module checksum validation route', () => {
         expect(response.statusCode).toBe(200)
         const update = mocks.execute.mock.calls.find(([sql]) => String(sql).includes('UPDATE modules SET display_name'))
         expect(update?.[1]).toEqual(expect.arrayContaining([false, 'module-1']))
+        expect(mocks.execute).toHaveBeenCalledWith(expect.stringContaining('revision = revision + 1'), [
+            'server-1', 'project-1'
+        ])
         expect(mocks.writeAudit).toHaveBeenCalled()
         expect(mocks.writeAudit.mock.calls[0]?.[2]).toMatchObject({
             action: 'module.metadata_updated',
@@ -214,6 +217,9 @@ describe('Explorer batch mutations', () => {
             'resourcepacks/config/options.txt', 'options.txt', 'module-options'
         ])
         expect(mocks.execute.mock.calls.filter(([sql]) => String(sql).includes('UPDATE projects'))).toHaveLength(1)
+        expect(mocks.execute).toHaveBeenCalledWith(expect.stringContaining('revision = revision + 1'), [
+            'server-1', 'project-1'
+        ])
         expect(mocks.writeAudit.mock.calls[0]?.[2]).toMatchObject({ action: 'explorer.entries_moved' })
     })
 

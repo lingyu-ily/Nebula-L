@@ -10,7 +10,8 @@ const projectDetail = {
         discord: null,
         draftVersion: 1,
         releaseRevision: null,
-        activeReleaseId: null,
+        published: false,
+        currentPublishId: null,
         disabled: false
     },
     servers: []
@@ -57,7 +58,7 @@ async function mockProjectPage(page: Page, catalogAvailable = true): Promise<Moc
             })
         } else if (url.pathname === '/api/v1/projects/project-1' && request.method() === 'GET') {
             await fulfillJson(route, projectDetail)
-        } else if (url.pathname.endsWith('/jobs') || url.pathname.endsWith('/releases')) {
+        } else if (url.pathname.endsWith('/jobs')) {
             await fulfillJson(route, { items: [] })
         } else if (url.pathname === '/api/v1/version-catalog/minecraft') {
             if (catalogAvailable) {

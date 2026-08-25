@@ -40,7 +40,7 @@ async function mockDistribution(
                     id: 'project-1', slug: 'maplecraftlauncher', name: 'MapleCraft', description: '', rss: '', discord: null,
                     draftVersion: 3,
                     releaseRevision: successfulJobSeen && successfulRevision != null ? successfulRevision : 3,
-                    activeReleaseId: 'release-1', launcherUrl, stableDistributionReady: ready, disabled: false
+                    published: true, currentPublishId: 'publish-1', launcherUrl, stableDistributionReady: ready, disabled: false
                 },
                 servers: []
             })
@@ -48,8 +48,6 @@ async function mockDistribution(
             successfulJobSeen = jobs.some(job => (job as { kind?: string, status?: string }).kind === 'PUBLISH'
                 && (job as { status?: string }).status === 'SUCCEEDED')
             await fulfillJson(route, { items: jobs })
-        } else if (path.endsWith('/releases')) {
-            await fulfillJson(route, { items: [] })
         } else {
             await route.fulfill({ status: 404, contentType: 'application/problem+json', body: '{"title":"Not Found"}' })
         }
@@ -63,13 +61,13 @@ test('shows and copies the stable launcher distribution URL', async ({ page }) =
 
     await expect(page.getByText(launcherUrl)).toBeVisible()
     await expect(page.getByText('Ready', { exact: true })).toBeVisible()
-    await expect(page.getByText('release-1')).toBeVisible()
+    await expect(page.getByText('publish-1')).toBeVisible()
     await page.getByRole('button', { name: 'Copy URL' }).click()
     await expect.poll(() => page.evaluate(() => (window as unknown as { copiedLauncherUrl?: string }).copiedLauncherUrl))
         .toBe(launcherUrl)
 })
 
-test('warns when the stable object does not match the active release', async ({ page }) => {
+test('warns when the stable object does not match the current publish', async ({ page }) => {
     await mockDistribution(page, false)
     await page.goto('/projects/project-1')
 

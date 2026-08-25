@@ -3,21 +3,17 @@ import { getConfig } from './config.js'
 import { getPool } from './db/index.js'
 import { verifyStoredObject, type StoredObjectExpectation } from './storage.js'
 
-const STABLE_CACHE_CONTROL = 'no-cache, must-revalidate'
-
-interface ReleaseDistributionRow extends RowDataPacket {
-    distribution_key: string
-    size: number
-    sha256: string
-}
+export const STABLE_CACHE_CONTROL = 'no-cache, must-revalidate'
 
 interface ActiveProjectRow extends RowDataPacket {
     id: string
     slug: string
     active_release_id: string
+    stable_distribution_size: number | null
+    stable_distribution_sha256: string | null
 }
 
-export interface ReleaseDistributionExpectation extends StoredObjectExpectation {
+export interface StableDistributionExpectation extends StoredObjectExpectation {
     distributionKey: string
 }
 
@@ -33,53 +29,50 @@ export function getLauncherUrl(slug: string): string {
     return buildLauncherUrl(getConfig().rustfs.publicBaseUrl, slug)
 }
 
-export async function getReleaseDistributionExpectation(
-    projectId: string,
-    releaseId: string
-): Promise<ReleaseDistributionExpectation> {
-    const [rows] = await getPool().execute<ReleaseDistributionRow[]>(
-        `SELECT r.distribution_key, rf.size, rf.sha256
-         FROM releases r INNER JOIN release_files rf ON rf.release_id = r.id
-         WHERE r.id = ? AND r.project_id = ? AND rf.logical_path = 'distribution.json'
-         LIMIT 1`,
-        [releaseId, projectId]
-    )
-    const row = rows[0]
-    if (!row) {
-        throw new Error(`Distribution metadata is missing for release ${releaseId}`)
+function projectExpectation(project: ActiveProjectRow): StableDistributionExpectation {
+    if (project.stable_distribution_size == null || !project.stable_distribution_sha256) {
+        throw new Error(`Stable distribution metadata is missing for project ${project.id}`)
     }
     return {
-        distributionKey: row.distribution_key,
-        size: Number(row.size),
-        sha256: row.sha256,
+        distributionKey: getStableDistributionKey(project.slug),
+        size: Number(project.stable_distribution_size),
+        sha256: project.stable_distribution_sha256,
         cacheControl: STABLE_CACHE_CONTROL,
-        releaseId
+        releaseId: project.active_release_id
     }
 }
 
 export async function assertStableDistribution(
     slug: string,
-    releaseId: string,
-    expected: ReleaseDistributionExpectation
+    currentPublishId: string,
+    expected: StableDistributionExpectation
 ): Promise<void> {
-    const expectedReleaseKey = `public/${slug}/releases/${releaseId}/distribution.json`
-    if (expected.distributionKey !== expectedReleaseKey) {
-        throw new Error(`Release ${releaseId} has an unexpected distribution object key`)
+    const stableKey = getStableDistributionKey(slug)
+    if (expected.distributionKey !== stableKey) {
+        throw new Error(`Publish ${currentPublishId} has an unexpected distribution object key`)
     }
-    await verifyStoredObject(getStableDistributionKey(slug), expected)
+    await verifyStoredObject(stableKey, expected)
 }
 
 export async function isStableDistributionReady(
     projectId: string,
     slug: string,
-    activeReleaseId: string | null
+    currentPublishId: string | null
 ): Promise<boolean> {
-    if (!activeReleaseId) {
+    if (!currentPublishId) {
         return false
     }
     try {
-        const expected = await getReleaseDistributionExpectation(projectId, activeReleaseId)
-        await assertStableDistribution(slug, activeReleaseId, expected)
+        const [rows] = await getPool().execute<ActiveProjectRow[]>(
+            `SELECT id, slug, active_release_id, stable_distribution_size, stable_distribution_sha256
+             FROM projects WHERE id = ? AND slug = ? AND active_release_id = ?`,
+            [projectId, slug, currentPublishId]
+        )
+        const project = rows[0]
+        if (!project) {
+            return false
+        }
+        await assertStableDistribution(slug, currentPublishId, projectExpectation(project))
         return true
     } catch {
         return false
@@ -88,11 +81,10 @@ export async function isStableDistributionReady(
 
 export async function checkActiveDistributions(): Promise<void> {
     const [projects] = await getPool().query<ActiveProjectRow[]>(
-        `SELECT id, slug, active_release_id FROM projects
-         WHERE disabled = FALSE AND active_release_id IS NOT NULL`
+        `SELECT id, slug, active_release_id, stable_distribution_size, stable_distribution_sha256
+         FROM projects WHERE disabled = FALSE AND active_release_id IS NOT NULL`
     )
     for (const project of projects) {
-        const expected = await getReleaseDistributionExpectation(project.id, project.active_release_id)
-        await assertStableDistribution(project.slug, project.active_release_id, expected)
+        await assertStableDistribution(project.slug, project.active_release_id, projectExpectation(project))
     }
 }

@@ -21,13 +21,13 @@ vi.mock('./db/index.js', (): Record<string, unknown> => ({
 vi.mock('./audit.js', (): Record<string, unknown> => ({ writeAudit: mocks.writeAudit }))
 
 import {
-    activateRelease,
+    activatePublish,
     type JobRow,
     type ProjectSnapshot
 } from './publisher.js'
 
 const job = {
-    id: 'release-1',
+    id: 'publish-1',
     project_id: 'project-1',
     kind: 'PUBLISH',
     status: 'RUNNING',
@@ -42,16 +42,20 @@ const snapshot = {
     sourceDraftVersion: 27
 } as ProjectSnapshot
 
-function mockLockedRows(projectRevision: number, releaseRevision: number | null): void {
+const stableObject = {
+    objectKey: 'public/test/distribution.json',
+    size: 123,
+    md5: 'a'.repeat(32),
+    sha256: 'b'.repeat(64)
+}
+
+function mockLockedProject(projectRevision: number): void {
     mocks.query.mockImplementation(async (sql: string) => {
         if (sql.includes('FROM users')) {
             return [[{ id: 'editor-1', username: 'editor', role: 'EDITOR' }]]
         }
         if (sql.includes('FROM projects')) {
             return [[{ release_revision: projectRevision }]]
-        }
-        if (sql.includes('FROM releases')) {
-            return [[{ release_revision: releaseRevision }]]
         }
         throw new Error(`Unexpected query: ${sql}`)
     })
@@ -62,40 +66,42 @@ beforeEach(() => {
     mocks.execute.mockResolvedValue([{ affectedRows: 1 }])
 })
 
-describe('published release revisions', () => {
-    it('allocates the next revision in the activation transaction', async () => {
-        mockLockedRows(11, null)
+describe('published revisions', () => {
+    it('allocates the next revision without creating a release row', async () => {
+        mockLockedProject(11)
 
-        await expect(activateRelease(job, snapshot)).resolves.toBe(12)
+        await expect(activatePublish(job, snapshot, stableObject)).resolves.toBe(12)
 
-        expect(mocks.execute).toHaveBeenCalledWith(expect.stringContaining('UPDATE releases SET release_revision'), [
-            12, 'release-1'
-        ])
         expect(mocks.execute).toHaveBeenCalledWith(expect.stringContaining('UPDATE projects SET release_revision'), [
-            12, 'release-1', 'project-1'
+            12, 'publish-1', 123, 'b'.repeat(64), 'project-1'
         ])
+        expect(mocks.execute.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO releases'))).toBe(false)
         expect(mocks.writeAudit).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({
-            action: 'release.published',
+            action: 'publish.succeeded',
             after: { releaseRevision: 12, sourceDraftVersion: 27 }
         }))
     })
 
-    it('reuses an already assigned revision when the same job is retried', async () => {
-        mockLockedRows(12, 12)
+    it('stores the stable object metadata in the job result', async () => {
+        mockLockedProject(4)
 
-        await expect(activateRelease(job, snapshot)).resolves.toBe(12)
+        await activatePublish(job, snapshot, stableObject)
 
-        const projectUpdate = mocks.execute.mock.calls.find(([sql]) => String(sql).includes('UPDATE projects SET release_revision'))
-        expect(projectUpdate?.[1]).toEqual([12, 'release-1', 'project-1'])
+        const jobUpdate = mocks.execute.mock.calls.find(([sql]) => String(sql).includes('UPDATE jobs SET status = \'SUCCEEDED\''))
+        expect(JSON.parse(String(jobUpdate?.[1]?.[0]))).toEqual({
+            releaseRevision: 5,
+            currentPublishId: 'publish-1',
+            distributionKey: 'public/test/distribution.json',
+            size: 123,
+            sha256: 'b'.repeat(64)
+        })
     })
 
-    it('does not update the project counter when the candidate release cannot be locked', async () => {
-        mockLockedRows(11, null)
+    it('does not update state when the project cannot be locked', async () => {
         mocks.query.mockImplementationOnce(async () => [[{ id: 'editor-1', username: 'editor', role: 'EDITOR' }]])
-            .mockImplementationOnce(async () => [[{ release_revision: 11 }]])
             .mockImplementationOnce(async () => [[]])
 
-        await expect(activateRelease(job, snapshot)).rejects.toThrow('Release not found')
+        await expect(activatePublish(job, snapshot, stableObject)).rejects.toThrow('Project not found')
 
         expect(mocks.execute).not.toHaveBeenCalledWith(
             expect.stringContaining('UPDATE projects SET release_revision'),

@@ -4,7 +4,7 @@ Generate a distribution.json for Helios. Documentation on this format can be fou
 
 ## Nebula Console
 
-Nebula now includes a Docker-based web console for managing multiple Helios distributions. Metadata lives in external MariaDB; uploaded source files and immutable releases live in external RustFS. The application provides local accounts, Admin/Editor/Auditor roles, background publishing, rollback, release retention, and append-only audit records.
+Nebula now includes a Docker-based web console for managing multiple Helios distributions. Metadata lives in external MariaDB; uploaded source files and incremental server builds live in external RustFS. The application provides local accounts, Admin/Editor/Auditor roles, background publishing, per-server build reuse, and append-only audit records.
 
 ### Production requirements
 
@@ -44,23 +44,25 @@ Published objects use this layout:
 
 ```text
 public/{distribution-slug}/distribution.json
-public/{distribution-slug}/releases/{release-id}/...
+public/{distribution-slug}/server-builds/{server-id}/{publish-job-id}/...
 private/uploads/{project-id}/...
 ```
 
-The stable `distribution.json` is replaced only after every immutable release object has uploaded and passed size/SHA-256 verification. Five successful releases are retained. Release metadata and audit records remain in MariaDB after old objects are cleaned.
+The stable `distribution.json` is replaced only after every changed server build has uploaded and passed size/SHA-256 verification. Unchanged server revisions reuse their existing build. After a successful publish, obsolete server builds are cleaned on a best-effort basis. Publish history remains available through background jobs and audit records; in-application rollback is not provided.
 
-Configure Helios Launcher with the stable URL, never a URL containing a release ID:
+The first publish after this upgrade builds every server; later publishes rebuild only changed server revisions. Legacy `releases`/`release_files` rows and `public/{slug}/releases/*` objects are preserved as read-only historical data. New publishes do not create or update them, and the Console no longer exposes activation or rollback endpoints.
+
+Configure Helios Launcher with the stable URL, never a URL containing a publish job ID:
 
 ```text
 {RUSTFS_PUBLIC_BASE_URL}/public/{distribution-slug}/distribution.json
 ```
 
-The management page displays this URL and verifies that the stable object's size and SHA-256 match the active release. `/health/ready` also reports not ready if an active distribution has a missing or mismatched stable object.
+The management page displays this URL and verifies that the stable object's size and SHA-256 match the current publish. `/health/ready` also reports not ready if an active distribution has a missing or mismatched stable object.
 
 When adopting this layout for an existing Launcher, deploy Nebula and publish the Distribution first. Confirm that the stable URL returns HTTP `200` before releasing a Launcher build that uses it.
 
-Nebula writes `no-cache, must-revalidate` to the stable object and `public, max-age=31536000, immutable` to release objects. Confirm that the deployed RustFS version or CDN forwards the stored S3 `Cache-Control` value on anonymous responses; if it does not, apply equivalent path rules at the CDN/reverse-proxy layer.
+Nebula writes `no-cache, must-revalidate` to the stable object and `public, max-age=31536000, immutable` to server-build objects. Confirm that the deployed RustFS version or CDN forwards the stored S3 `Cache-Control` value on anonymous responses; if it does not, apply equivalent path rules at the CDN/reverse-proxy layer.
 
 ### Local development
 
@@ -408,8 +410,8 @@ Sample:
 }
 ```
 
-Launcher UI fields are optional. Hero image values may be full HTTP(S) URLs or paths relative to the server directory; relative files are published with the release and converted to public URLs. In Nebula Console, configure the same fields from the server's **Launcher page**. Empty values allow Helios to use its distribution or built-in defaults.
-Hero video may use a relative or HTTPS MP4/WebM file with `type: "file"`, or a YouTube video ID with `type: "youtube"`. Managed Nebula Console projects can upload a video, import a public HTTPS MP4/WebM URL into each immutable release, or retain a YouTube URL that is normalized during publishing.
+Launcher UI fields are optional. Hero image values may be full HTTP(S) URLs or paths relative to the server directory; relative files are published with that server build and converted to public URLs. In Nebula Console, configure the same fields from the server's **Launcher page**. Empty values allow Helios to use its distribution or built-in defaults.
+Hero video may use a relative MP4/WebM file with `type: "file"`, or a YouTube video ID with `type: "youtube"`. Managed Nebula Console projects can upload a video or retain a YouTube URL that is normalized during publishing. Legacy external MP4/WebM settings must be removed or replaced before the project can publish.
 For backward compatibility, `ui.hero.eyebrow` is the per-server label shown in the Launcher header above the Play, Mods, and Patch Notes tabs; it is not rendered above the hero logo.
 
 #### Untracked Files

@@ -670,9 +670,11 @@ export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
                 if (videoFile) uploadId = await uploadVideo(videoFile)
                 if (!uploadId) throw new Error(t('launcherVideoFileRequired'))
                 video = { source: 'upload', uploadId }
-            } else if (videoSource === 'external' || videoSource === 'youtube') {
+            } else if (videoSource === 'youtube') {
                 if (!videoUrl.trim()) throw new Error(t('launcherVideoUrlRequired'))
                 video = { source: videoSource, url: videoUrl.trim() }
+            } else if (videoSource === 'external') {
+                throw new Error(t('launcherVideoExternalUnsupported'))
             }
             return api<{ draftVersion: number }>(
                 `/api/v1/projects/${projectId}/servers/${serverId}/launcher-ui`,
@@ -896,7 +898,7 @@ export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
                         >
                             <option value="">{t('launcherVideoNone')}</option>
                             <option value="upload">{t('launcherVideoUpload')}</option>
-                            <option value="external">{t('launcherVideoExternal')}</option>
+                            <option value="external" disabled>{t('launcherVideoExternalUnsupported')}</option>
                             <option value="youtube">{t('launcherVideoYouTube')}</option>
                         </select>
                     </label>
@@ -915,11 +917,11 @@ export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
                         <input
                             type="url"
                             value={videoUrl}
-                            disabled={!canEdit}
+                            disabled={!canEdit || videoSource === 'external'}
                             placeholder={videoSource === 'youtube' ? 'https://www.youtube.com/watch?v=…' : 'https://cdn.example.com/hero.mp4'}
                             onChange={event => setVideoUrl(event.target.value)}
                         />
-                        <small>{videoSource === 'youtube' ? t('launcherVideoYouTubeHint') : t('launcherVideoExternalHint')}</small>
+                        <small>{videoSource === 'youtube' ? t('launcherVideoYouTubeHint') : t('launcherVideoExternalUnsupported')}</small>
                     </label>}
                     {videoSource && canEdit && <button type="button" className="danger-link" onClick={() => {
                         setVideoSource('')

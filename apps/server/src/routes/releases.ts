@@ -1,18 +1,12 @@
 import { randomUUID } from 'crypto'
 import { publishSchema } from '@nebula/shared'
 import type { FastifyInstance } from 'fastify'
-import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise'
+import type { RowDataPacket } from 'mysql2/promise'
 import { writeAudit } from '../audit.js'
 import { getPool, withTransaction } from '../db/index.js'
 import { HttpError, parsePagination, requireCsrf, requireRole } from '../http.js'
 import { createPage } from '../list-pagination.js'
 import { buildProjectSnapshot } from '../publisher.js'
-import { copyJson } from '../storage.js'
-import {
-    assertStableDistribution,
-    getReleaseDistributionExpectation,
-    getStableDistributionKey
-} from '../stable-distribution.js'
 import { auditContextFromRequest } from '../types.js'
 
 interface JobListRow extends RowDataPacket {
@@ -28,18 +22,6 @@ interface JobListRow extends RowDataPacket {
     created_at: Date
     started_at: Date | null
     completed_at: Date | null
-}
-
-interface ReleaseRow extends RowDataPacket {
-    id: string
-    project_id: string
-    draft_revision: number
-    release_revision: number
-    status: 'ACTIVE' | 'AVAILABLE' | 'DELETED'
-    distribution_key: string
-    created_at: Date
-    activated_at: Date
-    username: string
 }
 
 export async function registerReleaseRoutes(app: FastifyInstance): Promise<void> {
@@ -74,7 +56,7 @@ export async function registerReleaseRoutes(app: FastifyInstance): Promise<void>
                 [jobId, projectId, JSON.stringify(snapshot), request.auth.id]
             )
             await writeAudit(connection, auditContextFromRequest(request), {
-                action: 'release.queued',
+                action: 'publish.queued',
                 entityType: 'job',
                 entityId: jobId,
                 projectId,
@@ -138,76 +120,5 @@ export async function registerReleaseRoutes(app: FastifyInstance): Promise<void>
             })
         })
         return { queued: true }
-    })
-
-    app.get('/api/v1/projects/:projectId/releases', { preHandler: requireRole('ADMIN', 'EDITOR', 'AUDITOR') }, async request => {
-        const { projectId } = request.params as { projectId: string }
-        const query = request.query as Record<string, unknown>
-        const { limit, offset } = parsePagination({ ...query, limit: query.limit ?? 100 })
-        const [rows] = await getPool().execute<ReleaseRow[]>(
-            `SELECT r.id, r.project_id, r.draft_revision, r.release_revision, r.status, r.distribution_key,
-                    r.created_at, r.activated_at, u.username
-             FROM releases r INNER JOIN users u ON u.id = r.created_by
-             WHERE r.project_id = ? AND r.release_revision IS NOT NULL
-             ORDER BY r.activated_at DESC, r.id DESC LIMIT ? OFFSET ?`,
-            [projectId, limit + 1, offset]
-        )
-        return createPage(rows.map(row => ({
-            id: row.id,
-            projectId: row.project_id,
-            releaseRevision: Number(row.release_revision),
-            status: row.status,
-            retained: row.status !== 'DELETED',
-            createdBy: row.username,
-            createdAt: row.created_at,
-            activatedAt: row.activated_at
-        })), limit, offset)
-    })
-
-    app.post('/api/v1/projects/:projectId/releases/:releaseId/activate', { preHandler: requireRole('ADMIN', 'EDITOR') }, async request => {
-        requireCsrf(request)
-        const { projectId, releaseId } = request.params as { projectId: string, releaseId: string }
-        const [rows] = await getPool().execute<(ReleaseRow & { slug: string })[]>(
-            `SELECT r.*, p.slug FROM releases r INNER JOIN projects p ON p.id = r.project_id
-             WHERE r.id = ? AND r.project_id = ? AND r.release_revision IS NOT NULL AND r.status <> 'DELETED'`,
-            [releaseId, projectId]
-        )
-        const release = rows[0]
-        if (!release) {
-            throw new HttpError(404, 'Retained release not found')
-        }
-        const expected = await getReleaseDistributionExpectation(projectId, releaseId)
-        await copyJson(
-            release.distribution_key,
-            getStableDistributionKey(release.slug),
-            'no-cache, must-revalidate',
-            releaseId
-        )
-        await assertStableDistribution(release.slug, releaseId, expected)
-        await withTransaction(async connection => {
-            await connection.execute(
-                'UPDATE releases SET status = \'AVAILABLE\' WHERE project_id = ? AND status = \'ACTIVE\'',
-                [projectId]
-            )
-            const [result] = await connection.execute<ResultSetHeader>(
-                'UPDATE releases SET status = \'ACTIVE\', activated_at = UTC_TIMESTAMP(3) WHERE id = ? AND status <> \'DELETED\'',
-                [releaseId]
-            )
-            if (result.affectedRows === 0) {
-                throw new HttpError(409, 'Release is no longer retained')
-            }
-            await connection.execute(
-                'UPDATE projects SET active_release_id = ?, updated_at = UTC_TIMESTAMP(3) WHERE id = ?',
-                [releaseId, projectId]
-            )
-            await writeAudit(connection, auditContextFromRequest(request), {
-                action: 'release.activated',
-                entityType: 'release',
-                entityId: releaseId,
-                projectId,
-                after: { releaseRevision: Number(release.release_revision) }
-            })
-        })
-        return { activated: true }
     })
 }

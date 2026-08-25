@@ -8,7 +8,7 @@ async function fulfillJson(route: Route, value: unknown, status = 200): Promise<
     })
 }
 
-async function mockLauncherPage(page: Page, missingImages = false): Promise<unknown[]> {
+async function mockLauncherPage(page: Page, missingImages = false, legacyExternalVideo = false): Promise<unknown[]> {
     const saves: unknown[] = []
     await page.addInitScript(() => localStorage.setItem('i18nextLng', 'en'))
     await page.route('**/api/v1/**', async route => {
@@ -31,7 +31,9 @@ async function mockLauncherPage(page: Page, missingImages = false): Promise<unkn
                     launcherUi: {
                         backgroundUploadId: missingImages ? 'missing-background' : null,
                         logoUploadId: missingImages ? 'missing-logo' : null,
-                        video: null,
+                        video: legacyExternalVideo
+                            ? { source: 'external', url: 'https://cdn.example.com/hero.webm' }
+                            : null,
                         eyebrow: '', title: '', tagline: '', rss: ''
                     }
                 },
@@ -77,19 +79,17 @@ test('edits and previews per-server launcher copy', async ({ page }) => {
     })
 })
 
-test('saves and previews an external launcher video source', async ({ page }) => {
-    const saves = await mockLauncherPage(page)
+test('requires an explicit replacement or removal for a legacy external video', async ({ page }) => {
+    const saves = await mockLauncherPage(page, false, true)
     await page.goto('/projects/project-1/servers/server-1/launcher')
 
-    await page.getByLabel('Hero video').selectOption('external')
-    await page.getByLabel('Public video URL').fill('https://cdn.example.com/hero.webm')
-    await expect(page.locator('video.launcher-hero-preview-video')).toHaveAttribute('src', 'https://cdn.example.com/hero.webm')
+    await expect(page.getByLabel('Hero video').locator('option[value="external"]')).toHaveAttribute('disabled', '')
+    await expect(page.locator('small').filter({ hasText: 'External video is no longer supported' })).toBeVisible()
+    await page.getByLabel('Hero video').selectOption('')
     await page.getByRole('button', { name: 'Save' }).click()
 
     await expect.poll(() => saves.length).toBe(1)
-    expect(saves[0]).toMatchObject({
-        video: { source: 'external', url: 'https://cdn.example.com/hero.webm' }
-    })
+    expect(saves[0]).toMatchObject({ video: null })
 })
 
 test('shows a recoverable message when stored launcher images are missing', async ({ page }) => {

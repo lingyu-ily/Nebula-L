@@ -11,7 +11,8 @@ const project = {
     discord: null,
     draftVersion: 7,
     releaseRevision: null,
-    activeReleaseId: null,
+    published: false,
+    currentPublishId: null,
     disabled: false
 }
 
@@ -62,7 +63,7 @@ async function mockProjectPage(
             await fulfillJson(route, { items: [] })
         } else if (url.pathname === '/api/v1/projects' && request.method() === 'GET') {
             await fulfillJson(route, { items: [] })
-        } else if (url.pathname.endsWith('/jobs') || url.pathname.endsWith('/releases')) {
+        } else if (url.pathname.endsWith('/jobs')) {
             await fulfillJson(route, { items: [] })
         } else {
             await fulfillJson(route, { title: 'Not Found', status: 404 }, 404)

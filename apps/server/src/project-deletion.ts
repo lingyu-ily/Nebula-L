@@ -96,6 +96,7 @@ async function deleteProjectDatabaseRecords(task: ProjectDeletionTaskRow): Promi
         await connection.execute('DELETE FROM jobs WHERE project_id = ?', [task.project_id])
         await connection.execute('DELETE FROM modules WHERE project_id = ?', [task.project_id])
         await connection.execute('DELETE FROM server_directories WHERE project_id = ?', [task.project_id])
+        await connection.execute('DELETE FROM server_builds WHERE project_id = ?', [task.project_id])
         await connection.execute('DELETE FROM servers WHERE project_id = ?', [task.project_id])
         await connection.execute('DELETE FROM uploads WHERE project_id = ?', [task.project_id])
         await connection.execute('DELETE FROM audit_logs WHERE project_id = ?', [task.project_id])

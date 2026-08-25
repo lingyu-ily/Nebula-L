@@ -51,7 +51,9 @@ export const projects = mysqlTable('projects', {
     discord: json('discord'),
     draftVersion: bigint('draft_revision', { mode: 'number', unsigned: true }).notNull().default(0),
     releaseRevision: bigint('release_revision', { mode: 'number', unsigned: true }).notNull().default(0),
-    activeReleaseId: char('active_release_id', { length: 36 }),
+    currentPublishId: char('active_release_id', { length: 36 }),
+    stableDistributionSize: bigint('stable_distribution_size', { mode: 'number', unsigned: true }),
+    stableDistributionSha256: char('stable_distribution_sha256', { length: 64 }),
     disabled: boolean('disabled').notNull().default(false),
     disabledAt: datetime('disabled_at', { mode: 'date', fsp: 3 }),
     createdBy: char('created_by', { length: 36 }).notNull(),
@@ -108,6 +110,19 @@ export const servers = mysqlTable('servers', {
     publishedOnce: boolean('published_once').notNull().default(false),
     ...timestamps
 }, table => [uniqueIndex('servers_project_key_uq').on(table.projectId, table.serverKey)])
+
+export const serverBuilds = mysqlTable('server_builds', {
+    id: char('id', { length: 36 }).primaryKey(),
+    projectId: char('project_id', { length: 36 }).notNull(),
+    serverId: char('server_id', { length: 36 }).notNull(),
+    sourceRevision: bigint('source_revision', { mode: 'number', unsigned: true }).notNull(),
+    spec: json('spec').notNull(),
+    objectPrefix: varchar('object_prefix', { length: 1024 }).notNull(),
+    createdAt: datetime('created_at', { mode: 'date', fsp: 3 }).notNull()
+}, table => [
+    uniqueIndex('server_builds_server_revision_uq').on(table.serverId, table.sourceRevision),
+    index('server_builds_project_idx').on(table.projectId)
+])
 
 export const uploads = mysqlTable('uploads', {
     id: char('id', { length: 36 }).primaryKey(),

@@ -17,7 +17,8 @@ const project = {
     discord: null,
     draftVersion: 3,
     releaseRevision: null,
-    activeReleaseId: null,
+    published: false,
+    currentPublishId: null,
     disabled: false
 }
 
