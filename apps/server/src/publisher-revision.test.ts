@@ -39,7 +39,8 @@ const job = {
 
 const snapshot = {
     id: 'project-1',
-    sourceDraftVersion: 27
+    sourceDraftVersion: 27,
+    servers: [{ id: 'frozen-server' }]
 } as ProjectSnapshot
 
 const stableObject = {
@@ -76,6 +77,9 @@ describe('published revisions', () => {
             12, 'publish-1', 123, 'b'.repeat(64), 'project-1'
         ])
         expect(mocks.execute.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO releases'))).toBe(false)
+        expect(mocks.execute).toHaveBeenCalledWith(expect.stringContaining('published_once = TRUE WHERE project_id = ? AND id IN'), [
+            'project-1', 'frozen-server'
+        ])
         expect(mocks.writeAudit).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({
             action: 'publish.succeeded',
             after: { releaseRevision: 12, sourceDraftVersion: 27 }

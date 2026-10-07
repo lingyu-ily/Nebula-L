@@ -96,6 +96,15 @@ export async function registerReleaseRoutes(app: FastifyInstance): Promise<void>
         requireCsrf(request)
         const { jobId } = request.params as { jobId: string }
         await withTransaction(async connection => {
+            const [owners] = await connection.query<(RowDataPacket & { project_id: string })[]>(
+                'SELECT project_id FROM jobs WHERE id = ?', [jobId]
+            )
+            if (!owners[0]) throw new HttpError(404, 'Job not found')
+            // Match publish queueing and private-upload cleanup lock order.
+            const [projects] = await connection.query<RowDataPacket[]>(
+                'SELECT id FROM projects WHERE id = ? AND disabled = FALSE FOR UPDATE', [owners[0].project_id]
+            )
+            if (!projects[0]) throw new HttpError(409, 'Project is unavailable')
             const [rows] = await connection.query<(RowDataPacket & { project_id: string, status: string })[]>(
                 'SELECT project_id, status FROM jobs WHERE id = ? FOR UPDATE',
                 [jobId]

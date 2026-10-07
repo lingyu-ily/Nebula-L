@@ -12,3 +12,6 @@ export type {
 export { MinecraftVersion } from './util/MinecraftVersion.js'
 export { VersionUtil } from './util/VersionUtil.js'
 export { ToggleableNamespace } from './structure/spec_model/module/ToggleableModule.struct.js'
+export { VersionSegmentedRegistry } from './util/VersionSegmentedRegistry.js'
+export { FabricModStructure } from './structure/spec_model/module/FabricMod.struct.js'
+export { LibraryStructure } from './structure/spec_model/module/Library.struct.js'

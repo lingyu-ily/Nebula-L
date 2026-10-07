@@ -63,6 +63,21 @@ afterEach(async () => {
 })
 
 describe('publish routes', () => {
+    it('locks the project before requeueing a failed job so source cleanup cannot race the retry', async () => {
+        mocks.query.mockImplementation(async (sql: string) => {
+            if (sql.startsWith('SELECT project_id FROM jobs')) return [[{ project_id: 'project-1' }]]
+            if (sql.startsWith('SELECT id FROM projects')) return [[{ id: 'project-1' }]]
+            if (sql.startsWith('SELECT project_id, status')) return [[{ project_id: 'project-1', status: 'FAILED' }]]
+            throw new Error(`Unexpected query: ${sql}`)
+        })
+        const app = await createApp()
+        const response = await app.inject({ method: 'POST', url: '/api/v1/jobs/failed-job/retry', headers: { 'x-csrf-token': 'csrf-token' } })
+        expect(response.statusCode).toBe(200)
+        expect(String(mocks.query.mock.calls[1]?.[0])).toContain('FROM projects')
+        expect(String(mocks.query.mock.calls[1]?.[0])).toContain('FOR UPDATE')
+        expect(mocks.execute).toHaveBeenCalledWith(expect.stringContaining('SET status = \'QUEUED\''), ['failed-job'])
+    })
+
     it('queues a publish using the internal draft version', async () => {
         const app = await createApp()
         const response = await app.inject({

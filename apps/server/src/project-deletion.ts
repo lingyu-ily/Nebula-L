@@ -4,6 +4,7 @@ import { writeAudit } from './audit.js'
 import { getConfig } from './config.js'
 import { getPool, withTransaction } from './db/index.js'
 import { deleteObjectPrefix } from './storage.js'
+import { ProjectStorageBusyError, withProjectStorageLock } from './project-storage-lock.js'
 
 export interface ProjectDeletionTaskRow extends RowDataPacket {
     id: string
@@ -97,6 +98,9 @@ async function deleteProjectDatabaseRecords(task: ProjectDeletionTaskRow): Promi
         await connection.execute('DELETE FROM modules WHERE project_id = ?', [task.project_id])
         await connection.execute('DELETE FROM server_directories WHERE project_id = ?', [task.project_id])
         await connection.execute('DELETE FROM server_builds WHERE project_id = ?', [task.project_id])
+        for (const table of ['publish_object_refs', 'publish_manifests', 'publish_parse_cache', 'publish_loader_cache', 'published_objects']) {
+            await connection.execute(`DELETE FROM ${table} WHERE project_id = ?`, [task.project_id])
+        }
         await connection.execute('DELETE FROM servers WHERE project_id = ?', [task.project_id])
         await connection.execute('DELETE FROM uploads WHERE project_id = ?', [task.project_id])
         await connection.execute('DELETE FROM audit_logs WHERE project_id = ?', [task.project_id])
@@ -125,13 +129,22 @@ async function deleteProjectDatabaseRecords(task: ProjectDeletionTaskRow): Promi
 }
 
 export async function purgeProject(task: ProjectDeletionTaskRow): Promise<void> {
-    for (const prefix of projectDeletionPrefixes(task.project_id, task.project_slug)) {
-        await deleteObjectPrefix(prefix, () => heartbeat(task.id))
-    }
-    await deleteProjectDatabaseRecords(task)
+    await withProjectStorageLock(task.project_id, async () => {
+        for (const prefix of projectDeletionPrefixes(task.project_id, task.project_slug)) {
+            await deleteObjectPrefix(prefix, () => heartbeat(task.id))
+        }
+        await deleteProjectDatabaseRecords(task)
+    })
 }
 
 export async function failProjectDeletion(task: ProjectDeletionTaskRow, error: unknown): Promise<void> {
+    if (error instanceof ProjectStorageBusyError) {
+        await getPool().execute(
+            `UPDATE project_deletion_tasks SET status = 'QUEUED', attempts = GREATEST(attempts - 1, 0),
+             available_at = TIMESTAMPADD(SECOND, 10, UTC_TIMESTAMP(3)), locked_by = NULL, locked_at = NULL WHERE id = ? AND status = 'RUNNING'`, [task.id]
+        )
+        return
+    }
     const message = error instanceof Error ? error.message : String(error)
     const retry = task.attempts < task.max_attempts
     await getPool().execute(

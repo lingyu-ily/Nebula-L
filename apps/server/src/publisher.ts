@@ -6,7 +6,6 @@ import { Type, type Distribution, type Module } from 'helios-distribution-types'
 import type { PoolConnection, RowDataPacket } from 'mysql2/promise'
 import {
     CurseForgeParser,
-    DistributionStructure,
     MinecraftVersion,
     ServerStructure
 } from '../../../dist/core.js'
@@ -15,12 +14,15 @@ import { getConfig } from './config.js'
 import { getPool, withTransaction } from './db/index.js'
 import { PermanentJobError, shouldRetryJob } from './job-errors.js'
 import { LAUNCHER_USAGE_TIME_ZONE } from './launcher-usage.js'
+import { buildIncrementalServer } from './incremental-publisher.js'
+import { PublishCache } from './publish-cache.js'
+import { cleanupProjectStorage, commitManifest, reconcileManifest } from './publish-cleanup.js'
+import { createPublishMetrics, withPublishMetrics, type PublishMetrics } from './publish-metrics.js'
+import { ProjectStorageBusyError, withProjectStorageLock } from './project-storage-lock.js'
 import {
     normalizeYouTubeVideoId
 } from './launcher-video.js'
 import {
-    copyStoredUpload,
-    deleteObjectPrefix,
     downloadToFile,
     isStorageObjectIntegrityError,
     isStorageObjectMissingError,
@@ -35,7 +37,7 @@ import {
     STABLE_CACHE_CONTROL
 } from './stable-distribution.js'
 
-interface SnapshotUpload {
+export interface SnapshotUpload {
     id: string
     objectKey: string
     originalName: string
@@ -45,7 +47,7 @@ interface SnapshotUpload {
     sha256: string
 }
 
-interface SnapshotModule {
+export interface SnapshotModule {
     id: string
     type: 'ForgeMod' | 'FabricMod' | 'Library' | 'File'
     displayName: string
@@ -59,7 +61,7 @@ interface SnapshotModule {
     upload: SnapshotUpload | null
 }
 
-interface SnapshotServer {
+export interface SnapshotServer {
     id: string
     revision: number
     serverKey: string
@@ -233,7 +235,7 @@ function parseProjectSnapshot(value: JobRow['snapshot']): ProjectSnapshot {
 
 const PUBLISH_IO_CONCURRENCY = 8
 
-async function mapWithConcurrency<T, R>(
+export async function mapWithConcurrency<T, R>(
     values: readonly T[],
     concurrency: number,
     operation: (value: T, index: number) => Promise<R>
@@ -246,10 +248,12 @@ async function mapWithConcurrency<T, R>(
             results[index] = await operation(values[index], index)
         }
     }
-    await Promise.all(Array.from(
+    const completed = await Promise.allSettled(Array.from(
         { length: Math.min(concurrency, values.length) },
         () => worker()
     ))
+    const failure = completed.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+    if (failure) throw failure.reason
     return results
 }
 
@@ -488,7 +492,7 @@ function namespace(mode: SnapshotModule['optionalMode']): string {
     return 'required'
 }
 
-function getModuleRelativePath(module: SnapshotModule): string {
+export function getModuleRelativePath(module: SnapshotModule): string {
     const name = module.fileName ?? module.upload?.originalName ?? `${module.id}.missing`
     if (module.type === 'File') {
         return join('files', ...(module.relativePath ?? name).split('/'))
@@ -605,7 +609,7 @@ function prepareLauncherVideo(server: SnapshotServer): MaterializedLauncherVideo
     )
 }
 
-async function materializeSnapshot(snapshot: ProjectSnapshot, root: string): Promise<void> {
+export async function materializeSnapshot(snapshot: ProjectSnapshot, root: string): Promise<void> {
     await mkdir(join(root, 'meta'), { recursive: true })
     await writeFile(join(root, 'meta', 'distrometa.json'), JSON.stringify({
         meta: {
@@ -797,7 +801,7 @@ async function listFiles(root: string): Promise<string[]> {
     return result
 }
 
-function contentType(path: string): string {
+export function contentType(path: string): string {
     switch (extname(path).toLowerCase()) {
         case '.json': return 'application/json; charset=utf-8'
         case '.png': return 'image/png'
@@ -821,15 +825,6 @@ async function heartbeat(jobId: string, progress: number): Promise<void> {
 
 type ServerSpec = Distribution['servers'][number]
 
-interface ServerBuildRow extends RowDataPacket {
-    id: string
-    project_id: string
-    server_id: string
-    source_revision: number
-    spec: ServerSpec | string
-    object_prefix: string
-}
-
 export interface SelectedServerBuild {
     id: string
     serverId: string
@@ -843,78 +838,8 @@ export interface ServerBuildSelection {
     dirtyServerIds: string[]
 }
 
-function serverRootName(server: SnapshotServer): string {
-    return `${server.serverKey}-${server.minecraftVersion}`
-}
-
 export function getServerBuildObjectPrefix(slug: string, serverId: string, publishJobId: string): string {
     return `public/${slug}/server-builds/${serverId}/${publishJobId}`
-}
-
-function iconRelativePath(server: SnapshotServer): string | null {
-    if (!server.icon) return null
-    const extension = ['.png', '.jpg', '.jpeg'].includes(extname(server.icon.originalName).toLowerCase())
-        ? extname(server.icon.originalName).toLowerCase()
-        : '.png'
-    return `servers/${serverRootName(server)}/icon${extension}`
-}
-
-function sourceUploadsByLogicalPath(server: SnapshotServer): Map<string, SnapshotUpload> {
-    const root = `servers/${serverRootName(server)}`
-    const entries: [string, SnapshotUpload][] = []
-    const add = (path: string | null | undefined, upload: SnapshotUpload | null | undefined): void => {
-        if (path && upload) entries.push([normalizedArtifactPath(path), upload])
-    }
-    add(iconRelativePath(server), server.icon)
-    add(
-        server.launcherUi.background
-            ? `${root}/launcher/background${launcherImageExtension(server.launcherUi.background)}`
-            : null,
-        server.launcherUi.background
-    )
-    add(
-        server.launcherUi.logo
-            ? `${root}/launcher/logo${launcherImageExtension(server.launcherUi.logo)}`
-            : null,
-        server.launcherUi.logo
-    )
-    if (server.launcherUi.video?.source === 'upload') {
-        add(
-            `${root}/launcher/video${launcherVideoExtension(server.launcherUi.video.upload.mimeType)}`,
-            server.launcherUi.video.upload
-        )
-    }
-    for (const module of server.modules) {
-        add(`${root}/${normalizedArtifactPath(getModuleRelativePath(module))}`, module.upload)
-    }
-    return new Map(entries)
-}
-
-function parseServerBuild(row: ServerBuildRow): SelectedServerBuild {
-    const spec = parseJson(row.spec)
-    if (!spec) {
-        throw new PermanentJobError(`Cached server build ${row.id} has no server spec`)
-    }
-    const sourceRevision = Number(row.source_revision)
-    if (!Number.isInteger(sourceRevision) || sourceRevision < 0) {
-        throw new PermanentJobError(`Cached server build ${row.id} has an invalid source revision`)
-    }
-    return {
-        id: row.id,
-        serverId: row.server_id,
-        sourceRevision,
-        spec,
-        objectPrefix: row.object_prefix
-    }
-}
-
-async function loadServerBuilds(projectId: string): Promise<SelectedServerBuild[]> {
-    const [rows] = await getPool().execute<ServerBuildRow[]>(
-        `SELECT id, project_id, server_id, source_revision, spec, object_prefix
-         FROM server_builds WHERE project_id = ?`,
-        [projectId]
-    )
-    return rows.map(parseServerBuild)
 }
 
 export function selectReusableServerBuilds(
@@ -942,71 +867,6 @@ export function selectReusableServerBuilds(
     return { reused, dirtyServerIds }
 }
 
-async function buildServer(
-    job: JobRow,
-    snapshot: ProjectSnapshot,
-    server: SnapshotServer
-): Promise<SelectedServerBuild> {
-    const workspace = await mkdtemp(join(tmpdir(), 'nebula-server-build-'))
-    const objectPrefix = getServerBuildObjectPrefix(snapshot.slug, server.id, job.id)
-    const publicBase = `${getConfig().rustfs.publicBaseUrl}/${objectPrefix}/`
-    const singleServerSnapshot = { ...snapshot, servers: [server] }
-    try {
-        await preflightSnapshotUploads(singleServerSnapshot)
-        await materializeSnapshot(singleServerSnapshot, workspace)
-        process.env.ROOT = workspace
-        process.env.BASE_URL = publicBase
-        process.env.JAVA_EXECUTABLE = getConfig().javaExecutable
-        const generated = await new DistributionStructure(workspace, publicBase, false, false).getSpecModel()
-        orderDistribution(generated, singleServerSnapshot)
-        applyChecksumValidation(generated, singleServerSnapshot)
-        const spec = generated.servers[0]
-        if (!spec) {
-            throw new PermanentJobError(`Server ${server.name} did not generate a server spec`)
-        }
-
-        const candidates = [
-            ...await listFiles(join(workspace, 'servers')),
-            ...await listFiles(join(workspace, 'repo'))
-        ].filter(path => basename(path) !== 'servermeta.json')
-        const sourceUploads = sourceUploadsByLogicalPath(server)
-        await mapWithConcurrency(candidates, PUBLISH_IO_CONCURRENCY, async path => {
-            const logicalPath = relative(workspace, path).split(sep).join('/')
-            const objectKey = `${objectPrefix}/${logicalPath}`
-            const source = sourceUploads.get(logicalPath)
-            try {
-                if (source) {
-                    return await copyStoredUpload(source.objectKey, objectKey, contentType(path), source)
-                }
-                return await uploadFile(path, objectKey, contentType(path))
-            } catch (error) {
-                if (isStorageObjectMissingError(error) || isStorageObjectIntegrityError(error)) {
-                    throw new PermanentJobError(
-                        `Published object ${logicalPath} for server ${server.name} failed RustFS verification: ${error.message}`
-                    )
-                }
-                throw error
-            }
-        })
-
-        const buildId = randomUUID()
-        await getPool().execute(
-            `INSERT INTO server_builds (
-                id, project_id, server_id, source_revision, spec, object_prefix, created_at
-             ) VALUES (?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3))
-             ON DUPLICATE KEY UPDATE id = VALUES(id), spec = VALUES(spec),
-                 object_prefix = VALUES(object_prefix), created_at = VALUES(created_at)`,
-            [buildId, snapshot.id, server.id, server.revision, JSON.stringify(spec), objectPrefix]
-        )
-        return { id: buildId, serverId: server.id, sourceRevision: server.revision, spec, objectPrefix }
-    } catch (error) {
-        await deleteObjectPrefix(`${objectPrefix}/`).catch(() => undefined)
-        throw error
-    } finally {
-        await rm(workspace, { recursive: true, force: true })
-    }
-}
-
 export interface PublishedDistribution extends Distribution {
     telemetry: {
         anonymousDailyActive: {
@@ -1025,29 +885,11 @@ export function buildLauncherTelemetry(appBaseUrl: string, slug: string): Publis
     }
 }
 
-function assembleDistribution(snapshot: ProjectSnapshot, builds: SelectedServerBuild[]): PublishedDistribution {
-    const buildByServer = new Map(builds.map(build => [build.serverId, build]))
-    const distribution: PublishedDistribution = {
-        version: '1.0.0',
-        rss: snapshot.rss,
-        ...(snapshot.discord ? { discord: snapshot.discord as Distribution['discord'] } : {}),
-        telemetry: buildLauncherTelemetry(getConfig().appBaseUrl, snapshot.slug),
-        servers: snapshot.servers.map(server => {
-            const build = buildByServer.get(server.id)
-            if (build?.sourceRevision !== server.revision) {
-                throw new PermanentJobError(`Server ${server.name} does not have a build for revision ${server.revision}`)
-            }
-            return build.spec
-        })
-    }
-    orderDistribution(distribution, snapshot)
-    return distribution
-}
-
 export async function activatePublish(
     job: JobRow,
     snapshot: ProjectSnapshot,
-    stableObject: StoredObject
+    stableObject: StoredObject,
+    metrics?: PublishMetrics
 ): Promise<number> {
     return withTransaction(async connection => {
         const [actors] = await connection.query<ActorRow[]>('SELECT id, username, role FROM users WHERE id = ?', [job.created_by])
@@ -1065,13 +907,19 @@ export async function activatePublish(
              stable_distribution_sha256 = ?, updated_at = UTC_TIMESTAMP(3) WHERE id = ?`,
             [releaseRevision, job.id, stableObject.size, stableObject.sha256, job.project_id]
         )
-        await connection.execute('UPDATE servers SET published_once = TRUE WHERE project_id = ?', [job.project_id])
+        if (snapshot.servers.length) {
+            await connection.execute(
+                `UPDATE servers SET published_once = TRUE WHERE project_id = ? AND id IN (${snapshot.servers.map(() => '?').join(', ')})`,
+                [job.project_id, ...snapshot.servers.map(server => server.id)]
+            )
+        }
         const result = {
             releaseRevision,
             currentPublishId: job.id,
             distributionKey: stableObject.objectKey,
             size: stableObject.size,
-            sha256: stableObject.sha256
+            sha256: stableObject.sha256,
+            ...(metrics ? { metrics } : {})
         }
         await connection.execute(
             `UPDATE jobs SET status = 'SUCCEEDED', progress = 100, result = ?, completed_at = UTC_TIMESTAMP(3),
@@ -1092,64 +940,92 @@ export async function activatePublish(
     })
 }
 
-async function cleanupObsoleteServerBuilds(
-    projectId: string,
-    retainedBuildIds: Set<string>
-): Promise<void> {
-    const builds = await loadServerBuilds(projectId)
-    const obsolete = builds.filter(build => !retainedBuildIds.has(build.id))
-    for (const build of obsolete) {
-        await deleteObjectPrefix(`${build.objectPrefix}/`)
-        await getPool().execute('DELETE FROM server_builds WHERE id = ?', [build.id])
-    }
-}
-
 export async function publishJob(job: JobRow): Promise<void> {
-    const snapshot = parseProjectSnapshot(job.snapshot)
-    validateSnapshot(snapshot)
-    await heartbeat(job.id, 5)
-    const cachedBuilds = await loadServerBuilds(snapshot.id)
-    const selection = selectReusableServerBuilds(snapshot, cachedBuilds)
-    const reusableByServer = new Map(selection.reused.map(build => [build.serverId, build]))
-    const selectedBuilds: SelectedServerBuild[] = []
-    for (let index = 0; index < snapshot.servers.length; index++) {
-        const server = snapshot.servers[index]
-        const cached = reusableByServer.get(server.id)
-        selectedBuilds.push(cached ?? await buildServer(job, snapshot, server))
-        await heartbeat(job.id, 10 + Math.floor((index + 1) / snapshot.servers.length * 70))
-    }
-
-    const distribution = assembleDistribution(snapshot, selectedBuilds)
-    await heartbeat(job.id, 85)
-    const distributionKey = getStableDistributionKey(snapshot.slug)
-    let stableObject: StoredObject
+    const metrics = createPublishMetrics()
+    const started = Date.now()
+    const keepAlive = setInterval(() => {
+        void getPool().execute('UPDATE jobs SET heartbeat_at = UTC_TIMESTAMP(3) WHERE id = ?', [job.id]).catch(() => undefined)
+    }, 30_000)
     try {
-        stableObject = await putJson(
-            distributionKey,
-            distribution,
-            STABLE_CACHE_CONTROL,
-            { 'release-id': job.id }
-        )
-        await assertStableDistribution(snapshot.slug, job.id, {
-            distributionKey,
-            size: stableObject.size,
-            sha256: stableObject.sha256,
-            cacheControl: STABLE_CACHE_CONTROL,
-            releaseId: job.id
-        })
-    } catch (error) {
-        if (isStorageObjectMissingError(error) || isStorageObjectIntegrityError(error)) {
-            throw new PermanentJobError(
-                `Stable distribution for ${snapshot.name} failed RustFS verification: ${error.message}`
+        await withPublishMetrics(metrics, () => withProjectStorageLock(job.project_id, async () => {
+            const snapshot = parseProjectSnapshot(job.snapshot)
+            validateSnapshot(snapshot)
+            const [existing] = await getPool().execute<(RowDataPacket & {
+                job_id: string
+                status: 'PREPARED' | 'WRITING' | 'ACTIVE' | 'RETIRED'
+                distribution: unknown
+            })[]>(
+                'SELECT job_id, status, distribution FROM publish_manifests WHERE project_id = ? AND job_id = ?', [snapshot.id, job.id]
             )
-        }
-        throw error
+            if (existing[0]?.status === 'WRITING') {
+                const [projects] = await getPool().execute<(RowDataPacket & {
+                    id: string
+                    slug: string
+                    active_release_id: string | null
+                    stable_distribution_sha256: string | null
+                })[]>(
+                    'SELECT id, slug, active_release_id, stable_distribution_sha256 FROM projects WHERE id = ?', [snapshot.id]
+                )
+                if (!projects[0] || !await reconcileManifest(projects[0], existing)) {
+                    throw new Error('Previous stable write is unresolved; its objects remain protected')
+                }
+                const [finished] = await getPool().execute<(RowDataPacket & { status: string })[]>('SELECT status FROM jobs WHERE id = ?', [job.id])
+                if (finished[0]?.status === 'SUCCEEDED') return
+            }
+            await getPool().execute(
+                `INSERT INTO publish_manifests (project_id, job_id, status) VALUES (?, ?, 'PREPARED')
+                 ON DUPLICATE KEY UPDATE status = 'PREPARED', distribution = NULL`, [snapshot.id, job.id]
+            )
+            await getPool().execute('DELETE FROM publish_object_refs WHERE project_id = ? AND job_id = ?', [snapshot.id, job.id])
+            const cache = new PublishCache(snapshot.id, snapshot.slug, job.id, metrics)
+            await cache.load()
+            await heartbeat(job.id, 5)
+            const servers: Distribution['servers'] = []
+            for (let index = 0; index < snapshot.servers.length; index++) {
+                servers.push(await buildIncrementalServer(cache, snapshot, snapshot.servers[index]))
+                await heartbeat(job.id, 10 + Math.floor((index + 1) / snapshot.servers.length * 70))
+            }
+            const distribution: PublishedDistribution = {
+                version: '1.0.0', rss: snapshot.rss,
+                ...(snapshot.discord ? { discord: snapshot.discord as Distribution['discord'] } : {}),
+                telemetry: buildLauncherTelemetry(getConfig().appBaseUrl, snapshot.slug), servers
+            }
+            await heartbeat(job.id, 85)
+            // Durable candidate refs exist before the fixed key can change.
+            await cache.flushReferences()
+            await getPool().execute(
+                'UPDATE publish_manifests SET status = \'WRITING\', distribution = ? WHERE project_id = ? AND job_id = ?',
+                [JSON.stringify(distribution), snapshot.id, job.id]
+            )
+            const distributionKey = getStableDistributionKey(snapshot.slug)
+            let stable: StoredObject
+            try {
+                stable = await putJson(distributionKey, distribution, STABLE_CACHE_CONTROL, { 'release-id': job.id })
+                await assertStableDistribution(snapshot.slug, job.id, {
+                    distributionKey, size: stable.size, sha256: stable.sha256,
+                    cacheControl: STABLE_CACHE_CONTROL, releaseId: job.id
+                })
+            } catch (error) {
+                if (isStorageObjectMissingError(error) || isStorageObjectIntegrityError(error)) {
+                    throw new PermanentJobError(`Stable distribution for ${snapshot.name} failed RustFS verification: ${error.message}`)
+                }
+                throw error
+            }
+            metrics.durationMs = Date.now() - started
+            await activatePublish(job, snapshot, stable, metrics)
+            // State promotion and cleanup are recoverable after activation. A
+            // cleanup failure must never turn the succeeded publish into FAILED.
+            await commitManifest(snapshot.id, job.id).catch(() => undefined)
+            await cleanupProjectStorage(snapshot.id).catch(() => undefined)
+        }))
+    } finally {
+        clearInterval(keepAlive)
+        metrics.durationMs = Date.now() - started
+        await getPool().execute(
+            'UPDATE jobs SET result = JSON_SET(COALESCE(result, JSON_OBJECT()), \'$.metrics\', JSON_EXTRACT(?, \'$\')) WHERE id = ?',
+            [JSON.stringify(metrics), job.id]
+        ).catch(() => undefined)
     }
-    await activatePublish(job, snapshot, stableObject)
-    await cleanupObsoleteServerBuilds(
-        snapshot.id,
-        new Set(selectedBuilds.map(build => build.id))
-    ).catch(() => undefined)
 }
 
 interface ImportedArtifact {
@@ -1341,6 +1217,14 @@ async function claimJob(workerId: string): Promise<JobRow | undefined> {
 }
 
 async function failJob(job: JobRow, error: unknown): Promise<void> {
+    if (error instanceof ProjectStorageBusyError) {
+        await getPool().execute(
+            `UPDATE jobs SET status = 'QUEUED', attempts = GREATEST(attempts - 1, 0),
+             available_at = TIMESTAMPADD(SECOND, 10, UTC_TIMESTAMP(3)), locked_by = NULL, locked_at = NULL WHERE id = ? AND status = 'RUNNING'`,
+            [job.id]
+        )
+        return
+    }
     const message = error instanceof Error ? error.message : String(error)
     const retry = shouldRetryJob(error, job.attempts, job.max_attempts)
     const delays = [30, 120, 600]

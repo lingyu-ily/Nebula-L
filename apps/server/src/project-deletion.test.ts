@@ -13,6 +13,10 @@ interface MockConnection {
 }
 
 vi.mock('./storage.js', (): Record<string, unknown> => ({ deleteObjectPrefix: mocks.deleteObjectPrefix }))
+vi.mock('./project-storage-lock.js', async (): Promise<Record<string, unknown>> => ({
+    ...await vi.importActual<typeof import('./project-storage-lock.js')>('./project-storage-lock.js'),
+    withProjectStorageLock: async (_id: string, work: () => Promise<unknown>): Promise<unknown> => work()
+}))
 vi.mock('./audit.js', (): Record<string, unknown> => ({ writeAudit: mocks.writeAudit }))
 vi.mock('./config.js', (): Record<string, unknown> => ({ getConfig: (): { workerPollMs: number } => ({ workerPollMs: 2000 }) }))
 vi.mock('./db/index.js', (): Record<string, unknown> => ({
@@ -32,6 +36,7 @@ import {
     recoverStaleProjectDeletions,
     type ProjectDeletionTaskRow
 } from './project-deletion.js'
+import { ProjectStorageBusyError } from './project-storage-lock.js'
 
 const task = {
     id: 'deletion-1',
@@ -68,6 +73,11 @@ beforeEach(() => {
 })
 
 describe('project deletion', () => {
+    it('does not consume a deletion attempt when publishing owns the storage lock', async () => {
+        await failProjectDeletion(task, new ProjectStorageBusyError())
+        expect(String(mocks.execute.mock.calls.at(-1)?.[0])).toContain('GREATEST(attempts - 1, 0)')
+        expect(mocks.writeAudit).not.toHaveBeenCalled()
+    })
     it('targets both public and private project prefixes', () => {
         expect(projectDeletionPrefixes('project-1', 'test-project')).toEqual([
             'public/test-project/',

@@ -127,6 +127,20 @@ afterEach(async () => {
 })
 
 describe('module checksum validation route', () => {
+    it('does not bump the server revision when the checksum setting is unchanged', async () => {
+        mocks.query.mockImplementation(async (sql: string) => {
+            if (sql.includes('FROM projects')) return [[project]]
+            if (sql.includes('FROM servers')) return [[server]]
+            if (sql.includes('FROM modules m LEFT JOIN uploads')) return [[moduleRow('File')]]
+            if (sql.includes('SELECT id FROM modules') || sql.includes('SELECT id FROM server_directories')) return [[]]
+            throw new Error(`Unexpected query: ${sql}`)
+        })
+        const app = await createApp('EDITOR')
+        const response = await app.inject(checksumMutation(true))
+        expect(response.statusCode).toBe(200)
+        expect(mocks.execute.mock.calls.some(([sql]) => String(sql).includes('UPDATE servers SET revision'))).toBe(false)
+    })
+
     it('allows an editor to disable validation for a File module', async () => {
         mocks.query.mockImplementation(async (sql: string) => {
             if (sql.includes('FROM projects WHERE id = ? FOR UPDATE')) return [[project]]

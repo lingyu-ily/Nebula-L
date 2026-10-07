@@ -407,7 +407,7 @@ export async function registerUploadRoutes(app: FastifyInstance): Promise<void> 
                 throw new HttpError(409, 'Upload is still in use')
             }
             const [result] = await connection.execute<ResultSetHeader>(
-                'UPDATE uploads SET status = \'DELETED\' WHERE id = ? AND project_id = ? AND status = \'READY\'',
+                'UPDATE uploads SET status = \'DELETED\', deleted_at = UTC_TIMESTAMP(3) WHERE id = ? AND project_id = ? AND status = \'READY\'',
                 [uploadId, projectId]
             )
             if (result.affectedRows === 0) {

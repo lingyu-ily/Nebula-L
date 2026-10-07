@@ -1,0 +1,20 @@
+services:
+  mariadb:
+    image: mariadb:10.11
+    environment:
+      MARIADB_ROOT_PASSWORD: nebula_publish_test
+    ports:
+      - "127.0.0.1:13306:3306"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  rustfs:
+    image: rustfs/rustfs:latest
+    environment:
+      RUSTFS_ACCESS_KEY: nebula_test
+      RUSTFS_SECRET_KEY: nebula_test_secret
+      RUSTFS_VOLUMES: /data
+    ports:
+      - "127.0.0.1:19000:9000"

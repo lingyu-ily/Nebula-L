@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm'
 import {
     bigint,
     boolean,
@@ -152,6 +153,48 @@ export const serverBuilds = mysqlTable('server_builds', {
     index('server_builds_project_idx').on(table.projectId)
 ])
 
+export const publishedObjects = mysqlTable('published_objects', {
+    projectId: char('project_id', { length: 36 }).notNull(),
+    id: char('id', { length: 64 }).notNull(),
+    objectKey: varchar('object_key', { length: 1024 }).notNull(),
+    sha256: char('sha256', { length: 64 }).notNull(),
+    md5: char('md5', { length: 32 }).notNull(),
+    size: bigint('size', { mode: 'number', unsigned: true }).notNull(),
+    contentType: varchar('content_type', { length: 255 }).notNull(),
+    verified: boolean('verified').notNull().default(false),
+    createdAt: datetime('created_at', { mode: 'date', fsp: 3 }).notNull().default(sql`CURRENT_TIMESTAMP(3)`)
+}, table => [primaryKey({ columns: [table.projectId, table.id] })])
+
+export const publishManifests = mysqlTable('publish_manifests', {
+    projectId: char('project_id', { length: 36 }).notNull(),
+    jobId: char('job_id', { length: 36 }).notNull(),
+    status: mysqlEnum('status', ['PREPARED', 'WRITING', 'ACTIVE', 'RETIRED']).notNull(),
+    distribution: json('distribution'),
+    createdAt: datetime('created_at', { mode: 'date', fsp: 3 }).notNull().default(sql`CURRENT_TIMESTAMP(3)`)
+}, table => [primaryKey({ columns: [table.projectId, table.jobId] })])
+
+export const publishObjectRefs = mysqlTable('publish_object_refs', {
+    projectId: char('project_id', { length: 36 }).notNull(),
+    jobId: char('job_id', { length: 36 }).notNull(),
+    objectId: char('object_id', { length: 64 }).notNull()
+}, table => [
+    primaryKey({ columns: [table.projectId, table.jobId, table.objectId] }),
+    index('publish_object_refs_object_idx').on(table.projectId, table.objectId)
+])
+
+export const publishParseCache = mysqlTable('publish_parse_cache', {
+    projectId: char('project_id', { length: 36 }).notNull(),
+    cacheKey: char('cache_key', { length: 64 }).notNull(),
+    spec: json('spec').notNull()
+}, table => [primaryKey({ columns: [table.projectId, table.cacheKey] })])
+
+export const publishLoaderCache = mysqlTable('publish_loader_cache', {
+    projectId: char('project_id', { length: 36 }).notNull(),
+    cacheKey: char('cache_key', { length: 64 }).notNull(),
+    spec: json('spec').notNull(),
+    objectIds: json('object_ids').notNull()
+}, table => [primaryKey({ columns: [table.projectId, table.cacheKey] })])
+
 export const uploads = mysqlTable('uploads', {
     id: char('id', { length: 36 }).primaryKey(),
     projectId: char('project_id', { length: 36 }).notNull(),
@@ -162,6 +205,7 @@ export const uploads = mysqlTable('uploads', {
     md5: char('md5', { length: 32 }).notNull(),
     sha256: char('sha256', { length: 64 }).notNull(),
     status: mysqlEnum('status', ['READY', 'DELETED']).notNull().default('READY'),
+    deletedAt: datetime('deleted_at', { mode: 'date', fsp: 3 }),
     createdBy: char('created_by', { length: 36 }).notNull(),
     createdAt: datetime('created_at', { mode: 'date', fsp: 3 }).notNull()
 })

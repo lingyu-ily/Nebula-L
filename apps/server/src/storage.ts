@@ -18,6 +18,7 @@ import {
 } from '@aws-sdk/client-s3'
 import { Upload } from '@aws-sdk/lib-storage'
 import { getConfig } from './config.js'
+import { recordStorageBytes, recordStorageRequest } from './publish-metrics.js'
 
 export interface StoredObject {
     objectKey: string
@@ -115,6 +116,10 @@ export function getStorageClient(): S3Client {
             forcePathStyle: true,
             ...S3_COMPATIBILITY_OPTIONS
         })
+        client.middlewareStack.add((next, context) => async (args): ReturnType<typeof next> => {
+            recordStorageRequest(context.commandName ?? 'UnknownCommand')
+            return next(args)
+        }, { step: 'finalizeRequest', priority: 'low', name: 'nebulaStorageMetrics' })
     }
     return client
 }
@@ -198,6 +203,7 @@ async function uploadKnownFile(
         leavePartsOnError: false
     })
     await upload.done()
+    recordStorageBytes('uploadedBytes', hashes.size)
 }
 
 async function deleteObjectBestEffort(objectKey: string): Promise<void> {
@@ -243,6 +249,7 @@ export async function downloadToFile(objectKey: string, destination: string): Pr
         throw new Error(`RustFS object ${objectKey} has no body`)
     }
     await pipeline(response.Body as Readable, createWriteStream(destination))
+    recordStorageBytes('downloadedBytes', (await stat(destination)).size)
 }
 
 export async function getStoredObject(objectKey: string, range?: string): Promise<{
@@ -269,7 +276,37 @@ export async function getStoredObject(objectKey: string, range?: string): Promis
     }
 }
 
-async function hashFile(path: string): Promise<Omit<StoredObject, 'objectKey'>> {
+export async function readStoredJson(objectKey: string): Promise<{
+    value: unknown
+    releaseId?: string
+    storedSha256?: string
+    sha256: string
+    md5: string
+    size: number
+    cacheControl?: string
+}> {
+    const response = await getStorageClient().send(new GetObjectCommand({
+        Bucket: getConfig().rustfs.bucket, Key: objectKey
+    }))
+    if (!response.Body) throw new Error(`RustFS object ${objectKey} has no body`)
+    const chunks: Buffer[] = []
+    let size = 0
+    for await (const chunk of response.Body as Readable) {
+        const buffer = Buffer.from(chunk as Uint8Array)
+        size += buffer.length
+        if (size > 64 * 1024 * 1024) throw new Error('Distribution JSON exceeds recovery read limit')
+        chunks.push(buffer)
+    }
+    const body = Buffer.concat(chunks)
+    recordStorageBytes('downloadedBytes', size)
+    return {
+        value: JSON.parse(body.toString('utf8')) as unknown, releaseId: response.Metadata?.['release-id'],
+        storedSha256: response.Metadata?.sha256, sha256: createHash('sha256').update(body).digest('hex'),
+        md5: createHash('md5').update(body).digest('hex'), size, cacheControl: response.CacheControl
+    }
+}
+
+export async function hashFile(path: string): Promise<Omit<StoredObject, 'objectKey'>> {
     const md5 = createHash('md5')
     const sha256 = createHash('sha256')
     const stream = createReadStream(path)
@@ -323,6 +360,7 @@ export async function copyStoredUpload(
                 sha256: expected.sha256
             }
         }))
+        recordStorageBytes('copiedBytes', expected.size)
         await verifyStoredObject(
             destinationKey,
             // RustFS applies CopyObject metadata inconsistently: the copied body
@@ -366,6 +404,7 @@ export async function putJson(
         CacheControl: cacheControl,
         Metadata: { md5, sha256, ...metadata }
     }))
+    recordStorageBytes('uploadedBytes', body.length)
     await verifyStoredObject(objectKey, {
         size: body.length,
         md5,

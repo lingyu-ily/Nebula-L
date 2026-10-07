@@ -25,6 +25,7 @@ import {
 } from '../managed-paths.js'
 import { auditContextFromRequest } from '../types.js'
 import { getLauncherUrl } from '../stable-distribution.js'
+import { contentChanged } from '../save-change.js'
 
 type ModuleType = 'ForgeMod' | 'FabricMod' | 'Library' | 'File'
 type OptionalMode = 'REQUIRED' | 'OPTIONAL_ON' | 'OPTIONAL_OFF'
@@ -879,7 +880,16 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
                     moduleRecordId
                 ]
             )
-            await bumpServerAndProject(connection, projectId, serverId)
+            const changed = contentChanged([
+                before.display_name, before.file_name ?? before.original_name, before.module_id, before.relative_path,
+                before.optional_mode, before.sort_order, Boolean(before.validate_checksum)
+            ], [
+                parsed.data.displayName ?? before.display_name, fileName,
+                parsed.data.moduleId === undefined ? before.module_id : parsed.data.moduleId, relativePath,
+                optionalMode, parsed.data.sortOrder ?? before.sort_order, parsed.data.validateChecksum ?? Boolean(before.validate_checksum)
+            ])
+            if (changed) await bumpServerAndProject(connection, projectId, serverId)
+            else await bumpProject(connection, projectId)
             await writeAudit(connection, auditContextFromRequest(request), {
                 action: 'module.metadata_updated',
                 entityType: 'module',
@@ -955,7 +965,9 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
                  manual_url = NULL, updated_at = UTC_TIMESTAMP(3) WHERE id = ?`,
                 [upload.id, fileName, moduleRecordId]
             )
-            await bumpServerAndProject(connection, projectId, serverId)
+            if (upload.sha256 !== before.sha256 || fileName !== (before.file_name ?? before.original_name) || before.needs_manual_file) {
+                await bumpServerAndProject(connection, projectId, serverId)
+            } else await bumpProject(connection, projectId)
             await writeAudit(connection, auditContextFromRequest(request), {
                 action: 'module.file_replaced',
                 entityType: 'module',

@@ -28,6 +28,7 @@ import {
 } from '../managed-paths.js'
 import { auditContextFromRequest } from '../types.js'
 import { getLauncherUrl, isStableDistributionReady } from '../stable-distribution.js'
+import { contentChanged, jsonValue } from '../save-change.js'
 
 interface ProjectRow extends RowDataPacket {
     id: string
@@ -773,6 +774,20 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
             if (before.published_once && before.server_key !== parsed.data.serverKey) {
                 throw new HttpError(409, 'Published server ID is immutable')
             }
+            const [rules] = await connection.query<(RowDataPacket & { applies_to: string, pattern: string })[]>(
+                'SELECT applies_to, pattern FROM untracked_rules WHERE server_id = ?', [serverId]
+            )
+            const fieldsChanged = contentChanged([
+                before.server_key, before.name, before.description, before.minecraft_version, before.server_version,
+                before.address, jsonValue(before.discord), before.icon_upload_id, before.forge_version, before.fabric_version,
+                Boolean(before.main_server), Boolean(before.autoconnect), before.sort_order, jsonValue(before.java_options),
+                rules.map(rule => `${rule.applies_to}:${rule.pattern}`).sort()
+            ], [
+                parsed.data.serverKey, parsed.data.name, parsed.data.description, parsed.data.minecraftVersion, parsed.data.serverVersion,
+                parsed.data.address, parsed.data.discord ?? null, parsed.data.iconUploadId ?? null, parsed.data.forgeVersion || null,
+                parsed.data.fabricVersion || null, parsed.data.mainServer, parsed.data.autoconnect, parsed.data.sortOrder,
+                parsed.data.javaOptions ?? null, parsed.data.untrackedRules.map(rule => `${rule.appliesTo}:${rule.pattern}`).sort()
+            ])
             if (parsed.data.mainServer) {
                 await connection.execute(
                     `UPDATE servers SET main_server = FALSE, revision = revision + 1,
@@ -783,13 +798,13 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
             await connection.execute(
                 `UPDATE servers SET server_key = ?, name = ?, description = ?, minecraft_version = ?,
                  server_version = ?, address = ?, discord = ?, icon_upload_id = ?, forge_version = ?, fabric_version = ?,
-                 main_server = ?, autoconnect = ?, sort_order = ?, java_options = ?, revision = revision + 1,
+                 main_server = ?, autoconnect = ?, sort_order = ?, java_options = ?, revision = revision + ?,
                  updated_at = UTC_TIMESTAMP(3) WHERE id = ?`,
                 [
                     parsed.data.serverKey, parsed.data.name, parsed.data.description, parsed.data.minecraftVersion,
                     parsed.data.serverVersion, parsed.data.address, JSON.stringify(parsed.data.discord ?? null), parsed.data.iconUploadId ?? null,
                     parsed.data.forgeVersion || null, parsed.data.fabricVersion || null, parsed.data.mainServer,
-                    parsed.data.autoconnect, parsed.data.sortOrder, JSON.stringify(parsed.data.javaOptions ?? null), serverId
+                    parsed.data.autoconnect, parsed.data.sortOrder, JSON.stringify(parsed.data.javaOptions ?? null), Number(fieldsChanged), serverId
                 ]
             )
             await replaceUntrackedRules(connection, serverId, parsed.data.untrackedRules)
@@ -834,10 +849,18 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
             const videoSource = parsed.data.video?.source ?? null
             const videoUploadId = parsed.data.video?.source === 'upload' ? parsed.data.video.uploadId : null
             const videoUrl = parsed.data.video && parsed.data.video.source !== 'upload' ? parsed.data.video.url : null
+            const fieldsChanged = contentChanged([
+                before.hero_background_upload_id, before.hero_logo_upload_id, before.hero_video_source,
+                before.hero_video_upload_id, before.hero_video_url, before.hero_eyebrow ?? '', before.hero_title ?? '',
+                before.hero_tagline ?? '', before.news_rss ?? ''
+            ], [
+                parsed.data.backgroundUploadId, parsed.data.logoUploadId, videoSource, videoUploadId, videoUrl,
+                parsed.data.eyebrow, parsed.data.title, parsed.data.tagline, parsed.data.rss
+            ])
             await connection.execute(
                 `UPDATE servers SET hero_background_upload_id = ?, hero_logo_upload_id = ?, hero_video_source = ?,
                  hero_video_upload_id = ?, hero_video_url = ?, hero_eyebrow = ?,
-                 hero_title = ?, hero_tagline = ?, news_rss = ?, revision = revision + 1,
+                 hero_title = ?, hero_tagline = ?, news_rss = ?, revision = revision + ?,
                  updated_at = UTC_TIMESTAMP(3) WHERE id = ?`,
                 [
                     parsed.data.backgroundUploadId,
@@ -849,6 +872,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                     parsed.data.title || null,
                     parsed.data.tagline || null,
                     parsed.data.rss || null,
+                    Number(fieldsChanged),
                     serverId
                 ]
             )
@@ -971,15 +995,16 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
         await withTransaction(async connection => {
             await lockProject(connection, projectId, expectedDraftVersion)
             const [beforeRows] = await connection.query<ModuleRow[]>(
-                'SELECT * FROM modules WHERE id = ? AND server_id = ? AND project_id = ? FOR UPDATE',
+                `SELECT m.*, u.sha256, u.original_name FROM modules m LEFT JOIN uploads u ON u.id = m.upload_id
+                 WHERE m.id = ? AND m.server_id = ? AND m.project_id = ? FOR UPDATE`,
                 [moduleId, serverId, projectId]
             )
             const before = beforeRows[0]
             if (!before) {
                 throw new HttpError(404, 'Module not found')
             }
-            const [uploadRows] = await connection.query<(RowDataPacket & { id: string, original_name: string })[]>(
-                'SELECT id, original_name FROM uploads WHERE id = ? AND project_id = ? AND status = \'READY\'',
+            const [uploadRows] = await connection.query<(RowDataPacket & { id: string, original_name: string, sha256: string })[]>(
+                'SELECT id, original_name, sha256 FROM uploads WHERE id = ? AND project_id = ? AND status = \'READY\'',
                 [parsed.data.uploadId, projectId]
             )
             const upload = uploadRows[0]
@@ -1016,7 +1041,16 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                     relativePath, parsed.data.optionalMode, parsed.data.sortOrder, parsed.data.validateChecksum, moduleId
                 ]
             )
-            await bumpServerAndProject(connection, projectId, serverId)
+            const changed = contentChanged([
+                before.sha256, before.type, before.display_name, before.file_name ?? before.original_name,
+                before.module_id, before.relative_path, before.optional_mode, before.sort_order,
+                Boolean(before.validate_checksum), Boolean(before.needs_manual_file)
+            ], [
+                upload.sha256, parsed.data.type, parsed.data.displayName, fileName, parsed.data.moduleId ?? null,
+                relativePath, parsed.data.optionalMode, parsed.data.sortOrder, parsed.data.validateChecksum, false
+            ])
+            if (changed) await bumpServerAndProject(connection, projectId, serverId)
+            else await bumpProject(connection, projectId)
             await writeAudit(connection, auditContextFromRequest(request), {
                 action: 'module.updated',
                 entityType: 'module',
