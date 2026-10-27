@@ -33,6 +33,7 @@ import {
 } from './api.js'
 import { collectDroppedTree, hasDroppedDirectory, type UploadBatchFile } from './explorer-drop.js'
 import { Link, NavLink, Navigate, useNavigate, useParams } from './router.js'
+import { Spotlight } from './visual/Spotlight.js'
 
 type OptionalMode = ManagedModule['optionalMode']
 type ModuleType = ManagedModule['type']
@@ -443,10 +444,10 @@ export function ServerOverviewPage(): ReactNode {
     return <>
         <ServerHeader detail={detail.data} />
         <div className="server-summary-grid">
-            <section className="summary-card"><span>{t('minecraft')}</span><strong>{server.minecraftVersion}</strong><small>{loaderLabel(server, t('loaderNone'))}</small></section>
-            <section className="summary-card"><span>{t('address')}</span><strong>{server.address}</strong><small>{server.serverVersion}</small></section>
-            <section className="summary-card"><span>{t('files')}</span><strong>{server.modules.length}</strong><small>{detail.data.directories.length} {t('folders')}</small></section>
-            <section className={`summary-card ${manualFiles > 0 ? 'summary-warning' : ''}`}><span>{t('waitingFile')}</span><strong>{manualFiles}</strong><small>{manualFiles > 0 ? t('publishBlocked') : t('ready')}</small></section>
+            <Spotlight><section className="summary-card"><span>{t('minecraft')}</span><strong>{server.minecraftVersion}</strong><small>{loaderLabel(server, t('loaderNone'))}</small></section></Spotlight>
+            <Spotlight><section className="summary-card"><span>{t('address')}</span><strong>{server.address}</strong><small>{server.serverVersion}</small></section></Spotlight>
+            <Spotlight><section className="summary-card"><span>{t('files')}</span><strong>{server.modules.length}</strong><small>{detail.data.directories.length} {t('folders')}</small></section></Spotlight>
+            <Spotlight><section className={`summary-card ${manualFiles > 0 ? 'summary-warning' : ''}`}><span>{t('waitingFile')}</span><strong>{manualFiles}</strong><small>{manualFiles > 0 ? t('publishBlocked') : t('ready')}</small></section></Spotlight>
         </div>
         <section className="card server-description">
             <h2>{t('overview')}</h2>

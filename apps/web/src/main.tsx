@@ -5,6 +5,9 @@ import { BrowserRouter } from './router.js'
 import './i18n.js'
 import './styles.css'
 import { App } from './App.js'
+import { MotionProvider } from './visual/motion.js'
+import { NebulaBackground } from './visual/NebulaBackground.js'
+import './console.css'
 
 const queryClient = new QueryClient({
     defaultOptions: {
@@ -17,7 +20,10 @@ createRoot(document.getElementById('root')!).render(
     <StrictMode>
         <QueryClientProvider client={queryClient}>
             <BrowserRouter>
-                <App />
+                <MotionProvider>
+                    <NebulaBackground />
+                    <App />
+                </MotionProvider>
             </BrowserRouter>
         </QueryClientProvider>
     </StrictMode>

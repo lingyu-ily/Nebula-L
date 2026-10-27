@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Link, NavLink, Navigate, Route, Routes, useNavigate, useParams } from './router.js'
+import { Link, Navigate, Route, Routes, useNavigate, useParams } from './router.js'
 import type { ApiUser, LauncherUsageResponse } from '@nebula/shared'
 import {
     api,
@@ -25,6 +25,10 @@ import {
     ServerSettingsPage
 } from './server-pages.js'
 import { BuildVersion } from './BuildVersion.js'
+import { ConsoleShell as Shell } from './visual/ConsoleShell.js'
+import { MotionToggle } from './visual/motion.js'
+import { Spotlight } from './visual/Spotlight.js'
+import { Icon } from './visual/Icon.js'
 
 function useSession(): ReturnType<typeof useQuery<AuthResponse, Error>> {
     return useQuery({
@@ -44,7 +48,7 @@ function ErrorNotice({ error }: { error: unknown }): ReactNode {
 }
 
 function LoginPage(): ReactNode {
-    const { t } = useTranslation()
+    const { t, i18n } = useTranslation()
     const queryClient = useQueryClient()
     const login = useMutation({
         mutationFn: (credentials: { username: string, password: string }) => api<AuthResponse>('/api/v1/auth/login', {
@@ -64,30 +68,23 @@ function LoginPage(): ReactNode {
     return <main className="login-shell">
         <section className="login-panel">
             <div className="nebula-mark" aria-hidden="true"><span /></div>
-            <p className="eyebrow">HELIOS DISTRIBUTION CONTROL</p>
+            <p className="eyebrow">{t('controlPlane')}</p>
             <h1>{t('brand')}</h1>
             <p className="muted">{t('tagline')}</p>
             <form onSubmit={submit} className="stack">
                 <label>{t('username')}<input name="username" autoComplete="username" required autoFocus /></label>
                 <label>{t('password')}<input name="password" type="password" autoComplete="current-password" required /></label>
                 <ErrorNotice error={login.error} />
-                <button className="primary" disabled={login.isPending}>{t('login')}</button>
+                <button className="primary login-submit" disabled={login.isPending}><span>{t('login')}</span><Icon name="arrow" /></button>
             </form>
+            <div className="login-controls"><MotionToggle /><button type="button" className="text-button" onClick={() => void i18n.changeLanguage(i18n.resolvedLanguage === 'en' ? 'zh-TW' : 'en')}><Icon name="globe" />{t('language')}</button></div>
             <BuildVersion />
         </section>
         <aside className="login-art" aria-hidden="true">
-            <div className="nebula-star-field nebula-stars-far" />
-            <div className="nebula-star-field nebula-stars-near" />
-            <div className="nebula-scene">
-                <div className="nebula-glow" />
-                <div className="nebula-orbit nebula-orbit-one"><span /></div>
-                <div className="nebula-orbit nebula-orbit-two"><span /></div>
-                <div className="nebula-orbit nebula-orbit-three"><span /></div>
-                <div className="nebula-particles">
-                    <span /><span /><span /><span /><span /><span />
-                </div>
-                <div className="nebula-core"><span /></div>
-            </div>
+            <div className="art-coordinate">NEBULA / 001 <span>25° 02′ N · 121° 33′ E</span></div>
+            <div className="orbital-system"><div className="orbital-halo" /><div className="cosmic-ring ring-one" /><div className="cosmic-ring ring-two" /><div className="cosmic-ring ring-three" /><div className="cosmic-core"><span>N</span></div><span className="orbit-label">HELIOS NETWORK</span></div>
+            <div className="art-copy"><p className="eyebrow">{t('loginArtEyebrow')}</p><h2>{t('loginArtTitle')}</h2><p>{t('loginArtHint')}</p></div>
+            <div className="art-footer"><span><i />{t('loginArtFooter')}</span><span>01 — ∞</span></div>
         </aside>
     </main>
 }
@@ -109,49 +106,16 @@ function ChangePasswordPage({ user }: { user: ApiUser }): ReactNode {
             newPassword: String(data.get('newPassword'))
         })
     }
-    return <main className="center-page"><section className="card narrow">
-        <p className="eyebrow">{user.username}</p><h1>{t('forcedPassword')}</h1>
+    return <main className="center-page"><section className="card narrow password-card">
+        <div className="nebula-mark" aria-hidden="true"><span /></div><p className="eyebrow">{user.username}</p><h1>{t('forcedPassword')}</h1>
         <form className="stack" onSubmit={submit}>
             <label>{t('currentPassword')}<input name="currentPassword" type="password" required /></label>
             <label>{t('newPassword')}<input name="newPassword" type="password" minLength={12} required /></label>
             <ErrorNotice error={change.error} />
             <button className="primary">{t('changePassword')}</button>
         </form>
+        <MotionToggle />
     </section></main>
-}
-
-function Shell({ user, children }: { user: ApiUser, children: ReactNode }): ReactNode {
-    const { t, i18n } = useTranslation()
-    const queryClient = useQueryClient()
-    const logout = useMutation({
-        mutationFn: () => api('/api/v1/auth/logout', { method: 'POST' }),
-        onSuccess: () => {
-            queryClient.clear()
-            window.location.replace('/')
-        }
-    })
-    const toggleLanguage = (): void => {
-        void i18n.changeLanguage(i18n.resolvedLanguage === 'en' ? 'zh-TW' : 'en')
-    }
-    return <div className="app-shell">
-        <aside className="sidebar">
-            <Link to="/projects" className="brand"><span className="brand-dot" />{t('brand')}</Link>
-            <nav>
-                <NavLink to="/projects">{t('projects')}</NavLink>
-                <NavLink to="/analytics">{t('analytics')}</NavLink>
-                {user.role === 'ADMIN' && <NavLink to="/users">{t('users')}</NavLink>}
-                <NavLink to="/audit">{t('audit')}</NavLink>
-            </nav>
-            <div className="account">
-                <span className={`role role-${user.role.toLowerCase()}`}>{user.role}</span>
-                <strong>{user.username}</strong>
-                <button className="text-button" onClick={toggleLanguage}>{t('language')}</button>
-                <button className="text-button" disabled={logout.isPending} onClick={() => logout.mutate()}>{t('logout')}</button>
-                <BuildVersion />
-            </div>
-        </aside>
-        <main className="content">{children}</main>
-    </div>
 }
 
 function ProjectsPage({ user }: { user: ApiUser }): ReactNode {
@@ -218,9 +182,14 @@ function ProjectsPage({ user }: { user: ApiUser }): ReactNode {
         purgeProject.mutate({ id: project.id, draftVersion: project.draftVersion, confirmationName })
     }
     return <>
-        <header className="page-header"><div><p className="eyebrow">CONTROL PLANE</p><h1>{t('projects')}</h1></div></header>
+        <header className="page-header"><div><p className="eyebrow">{t('controlPlane')}</p><h1>{t('projects')}</h1><p>{t('projectsHint')}</p></div><span className="header-emblem" aria-hidden="true"><Icon name="layers" /></span></header>
+        <section className="project-summary" aria-label={t('workspaceSummary')}>
+            <Spotlight><article className="metric-card"><Icon name="layers" /><span>{t('totalDistributions')}</span><strong>{projects.data ? projects.data.items.length.toString().padStart(2, '0') : '—'}</strong></article></Spotlight>
+            <Spotlight><article className="metric-card"><Icon name="pulse" /><span>{t('publishedDistributions')}</span><strong>{projects.data ? projects.data.items.filter(project => project.published).length.toString().padStart(2, '0') : '—'}</strong></article></Spotlight>
+            <Spotlight><article className="metric-card"><Icon name="sparkles" /><span>{t('draftDistributions')}</span><strong>{projects.data ? projects.data.items.filter(project => !project.published).length.toString().padStart(2, '0') : '—'}</strong></article></Spotlight>
+        </section>
         {user.role === 'ADMIN' && <details className="card disclosure">
-            <summary>{t('newProject')}</summary>
+            <summary><Icon name="plus" />{t('newProject')}</summary>
             <form className="form-grid" onSubmit={submit}>
                 <label>{t('name')}<input name="name" required /></label>
                 <label>{t('slug')}<input name="slug" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" required /></label>
@@ -230,11 +199,12 @@ function ProjectsPage({ user }: { user: ApiUser }): ReactNode {
             </form>
         </details>}
         <div className="project-grid">
-            {projects.data?.items.map(project => <Link className="project-card" to={`/projects/${project.id}`} key={project.id}>
+            {projects.data?.items.map((project, index) => <Spotlight className="project-spotlight" key={project.id} style={{ animationDelay: `${Math.min(index, 5) * 65}ms` }}><Link className="project-card" to={`/projects/${project.id}`}>
+                <div className="project-card-art" aria-hidden="true"><Icon name="layers" /><Icon name="arrow" /></div>
                 <div className="project-card-top"><span className={`status-dot ${project.published ? 'online' : ''}`} /><span>{project.published ? t('active') : t('draft')}</span></div>
                 <h2>{project.name}</h2><p>{project.description || project.slug}</p>
                 <footer><code>/{project.slug}</code><span>{project.releaseRevision == null ? t('notPublished') : `${t('revision')} ${project.releaseRevision}`}</span></footer>
-            </Link>)}
+            </Link></Spotlight>)}
             {!projects.isLoading && projects.data?.items.length === 0 && <div className="empty">{t('noProjects')}</div>}
         </div>
         <ErrorNotice error={projects.error} />
@@ -362,7 +332,7 @@ function AnalyticsPage(): ReactNode {
         {usage.isLoading && projectId && <section className="card analytics-loading">{t('analyticsLoading')}</section>}
         {usage.data && <>
             <section className="analytics-summary">
-                <article className="card usage-today"><span>{t('analyticsToday')}</span><strong>{today?.activeLaunchers ?? 0}</strong><small>{t('analyticsEstimated')}</small></article>
+                <Spotlight className="usage-spotlight"><article className="card usage-today"><Icon name="pulse" /><span>{t('analyticsToday')}</span><strong>{today?.activeLaunchers ?? 0}</strong><small>{t('analyticsEstimated')}</small></article></Spotlight>
                 <article className="card usage-chart-card"><div className="section-heading"><div><h2>{t('analyticsChartTitle')}</h2><p className="muted">{usage.data.project.name} · {usage.data.from} — {usage.data.to}</p></div></div><LauncherUsageChart usage={usage.data} /></article>
             </section>
             <details className="card usage-table"><summary>{t('analyticsTable')}</summary><div className="table-card"><table><thead><tr><th>{t('analyticsDate')}</th><th>{t('analyticsActiveLaunchers')}</th></tr></thead><tbody>
@@ -632,10 +602,10 @@ function ProjectPage({ user }: { user: ApiUser }): ReactNode {
         </header>
         <ErrorNotice error={publish.error} />
         <LauncherPanel project={project} />
-        <ProjectSettings detail={detail.data} canEdit={canEdit} />
         <ServerPanel key={project.draftVersion} detail={detail.data} canEdit={canEdit} />
-        <CurseForgePanel detail={detail.data} canEdit={canEdit} />
         <ReleasePanel key={project.id} project={project} canEdit={canEdit} />
+        <ProjectSettings detail={detail.data} canEdit={canEdit} />
+        <CurseForgePanel detail={detail.data} canEdit={canEdit} />
         {user.role === 'ADMIN' && <section className="card danger-zone">
             <div><h2>{t('disableProject')}</h2><p>{t('disableProjectHint')}</p></div>
             <button
@@ -672,7 +642,7 @@ function UsersPage(): ReactNode {
         create.mutate({ username: String(data.get('username')), password: String(data.get('password')), role: String(data.get('role')) })
         event.currentTarget.reset()
     }
-    return <><header className="page-header"><div><p className="eyebrow">IDENTITY & ACCESS</p><h1>{t('users')}</h1></div></header>
+    return <><header className="page-header"><div><p className="eyebrow">{t('identityAccess')}</p><h1>{t('users')}</h1></div></header>
         <details className="card disclosure"><summary>{t('newUser')}</summary><form className="form-grid" onSubmit={submit}>
             <label>{t('username')}<input name="username" required /></label><label>{t('password')}<input name="password" type="password" minLength={12} required /></label>
             <label>{t('role')}<select name="role"><option value="EDITOR">{t('editor')}</option><option value="AUDITOR">{t('auditor')}</option><option value="ADMIN">{t('admin')}</option></select></label>
@@ -688,7 +658,7 @@ function AuditPage(): ReactNode {
     const [action, setAction] = useState('')
     const logs = useQuery({ queryKey: ['audit', action], queryFn: () => api<{ items: AuditLog[] }>(`/api/v1/audit-logs?limit=100${action ? `&action=${encodeURIComponent(action)}` : ''}`) })
     const actions = useMemo(() => [...new Set(logs.data?.items.map(item => item.action) ?? [])], [logs.data])
-    return <><header className="page-header"><div><p className="eyebrow">IMMUTABLE EVENT TRAIL</p><h1>{t('audit')}</h1></div><div className="header-actions"><a className="secondary button-link" href="/api/v1/audit-logs?format=csv">{t('exportCsv')}</a><a className="secondary button-link" href="/api/v1/audit-logs?format=json">{t('exportJson')}</a></div></header>
+    return <><header className="page-header"><div><p className="eyebrow">{t('auditTrail')}</p><h1>{t('audit')}</h1></div><div className="header-actions"><a className="secondary button-link" href="/api/v1/audit-logs?format=csv">{t('exportCsv')}</a><a className="secondary button-link" href="/api/v1/audit-logs?format=json">{t('exportJson')}</a></div></header>
         <section className="card"><div className="filters"><label>{t('action')}<select value={action} onChange={event => setAction(event.target.value)}><option value="">—</option>{actions.map(value => <option key={value}>{value}</option>)}</select></label></div>
             <div className="audit-list">{logs.data?.items.map(log => <details className="audit-row" key={log.id}><summary><time>{new Date(log.createdAt).toLocaleString()}</time><strong>{log.action}</strong><span>{log.actorUsername ?? 'SYSTEM'}</span><span className={`result-${log.result.toLowerCase()}`}>{log.result}</span></summary><pre>{JSON.stringify({ entity: `${log.entityType}:${log.entityId}`, ip: log.ip, before: log.before, after: log.after, error: log.errorMessage }, null, 2)}</pre></details>)}</div>
         </section><ErrorNotice error={logs.error} /></>
@@ -696,7 +666,7 @@ function AuditPage(): ReactNode {
 
 export function App(): ReactNode {
     const session = useSession()
-    if (session.isLoading) return <div className="splash"><div className="nebula-mark"><span /></div><strong>NEBULA</strong></div>
+    if (session.isLoading) return <div className="splash" role="status"><div className="nebula-mark"><span /></div><strong>NEBULA</strong></div>
     if (session.error instanceof ApiError && session.error.status === 401 || !session.data) return <LoginPage />
     if (session.data.user.mustChangePassword) return <ChangePasswordPage user={session.data.user} />
     const user = session.data.user

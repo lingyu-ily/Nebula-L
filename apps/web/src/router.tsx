@@ -51,6 +51,12 @@ export function useNavigate(): RouterValue['navigate'] {
     return router.navigate
 }
 
+export function usePathname(): string {
+    const router = useContext(RouterContext)
+    if (!router) throw new Error('Router is not available')
+    return router.pathname
+}
+
 export function useParams<T extends Record<string, string | undefined> = Record<string, string>>(): T {
     return useContext(ParamsContext) as T
 }
@@ -70,7 +76,7 @@ export function NavLink(props: AnchorHTMLAttributes<HTMLAnchorElement> & { to: s
     const router = useContext(RouterContext)
     const active = router?.pathname === props.to || router?.pathname.startsWith(`${props.to}/`)
     const className = [props.className, active ? 'active' : ''].filter(Boolean).join(' ')
-    return <Link {...props} className={className} />
+    return <Link {...props} className={className} aria-current={active ? 'page' : undefined} />
 }
 
 export function Navigate({ to, replace = false }: { to: string, replace?: boolean }): ReactNode {

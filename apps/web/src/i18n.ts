@@ -4,6 +4,11 @@ import { initReactI18next } from 'react-i18next'
 
 const en = {
     translation: {
+        controlPlane: 'DISTRIBUTION CONTROL', workspace: 'Workspace', navigation: 'Main navigation', openNavigation: 'Open navigation', closeNavigation: 'Close navigation', skipContent: 'Skip to content',
+        motionEffects: 'Motion effects', motionSystem: 'Motion is reduced by your system preference.', consoleHint: 'One workspace. Every distribution.', workspaceSummary: 'Workspace summary',
+        projectsHint: 'Your distributions, connected. Build, manage, and publish from one place.', totalDistributions: 'Total distributions', publishedDistributions: 'Published', draftDistributions: 'Unpublished',
+        loginArtEyebrow: 'YOUR NEXT RELEASE STARTS HERE', loginArtTitle: 'A universe of possibilities.', loginArtHint: 'One control center for every world you create.', loginArtFooter: 'Built for your Helios worlds', identityAccess: 'IDENTITY & ACCESS', auditTrail: 'IMMUTABLE EVENT TRAIL',
+
         brand: 'Nebula Console',
         tagline: 'Controlled releases for every Helios distribution.',
         buildVersionLabel: 'Nebula version {{version}}, build {{commit}}',
@@ -54,6 +59,11 @@ const en = {
 
 const zhTW = {
     translation: {
+        controlPlane: 'DISTRIBUTION 管理中心', workspace: '工作空間', navigation: '主導覽', openNavigation: '開啟導覽', closeNavigation: '關閉導覽', skipContent: '跳至主要內容',
+        motionEffects: '動態效果', motionSystem: '已依系統偏好減少動態效果。', consoleHint: '一個工作空間，掌握所有 Distribution。', workspaceSummary: '工作空間摘要',
+        projectsHint: '集中管理每個世界，從建置、設定到發布，一站完成。', totalDistributions: 'Distribution 總數', publishedDistributions: '已發布', draftDistributions: '尚未發布',
+        loginArtEyebrow: '下一次發布，從這裡開始', loginArtTitle: '每個世界，都有無限可能。', loginArtHint: '為你打造的每個世界，提供一個管理中心。', loginArtFooter: '為你的 Helios 世界而生', identityAccess: '帳號與權限', auditTrail: '完整操作軌跡',
+
         brand: 'Nebula',
         tagline: 'MapleCraft Launcher 發布控制台',
         buildVersionLabel: 'Nebula 版本 {{version}}，建置 {{commit}}',
