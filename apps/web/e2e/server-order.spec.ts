@@ -71,13 +71,15 @@ async function mockProject(page: Page, options: {
     await page.addInitScript(() => localStorage.setItem('i18nextLng', 'en'))
     await page.route('**/api/v1/**', async route => {
         const request = route.request()
-        const path = new URL(request.url()).pathname
+        const url = new URL(request.url())
+        const path = url.pathname
         if (path === '/api/v1/auth/me') {
             await fulfillJson(route, {
                 user: { id: 'user-1', username: role.toLowerCase(), role, status: 'ACTIVE', mustChangePassword: false },
                 csrfToken: 'csrf-token'
             })
         } else if (path === '/api/v1/projects/project-1' && request.method() === 'GET') {
+            expect(url.searchParams.get('view')).toBe('summary')
             await fulfillJson(route, { project: { ...project, draftVersion }, servers: orderedServers })
         } else if (path === '/api/v1/projects/project-1/servers/order' && request.method() === 'PUT') {
             const body = request.postDataJSON() as { serverIds: string[] }

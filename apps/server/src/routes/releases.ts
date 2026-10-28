@@ -69,9 +69,10 @@ export async function registerReleaseRoutes(app: FastifyInstance): Promise<void>
     app.get('/api/v1/projects/:projectId/jobs', { preHandler: requireRole('ADMIN', 'EDITOR', 'AUDITOR') }, async request => {
         const { projectId } = request.params as { projectId: string }
         const query = request.query as Record<string, unknown>
+        const summary = query.view === 'summary'
         const { limit, offset } = parsePagination({ ...query, limit: query.limit ?? 100 })
         const [rows] = await getPool().execute<JobListRow[]>(
-            `SELECT id, project_id, kind, status, attempts, max_attempts, progress, result,
+            `SELECT id, project_id, kind, status, attempts, max_attempts, progress, ${summary ? '' : 'result,'}
                     error_text, created_at, started_at, completed_at
              FROM jobs WHERE project_id = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
             [projectId, limit + 1, offset]
@@ -84,7 +85,7 @@ export async function registerReleaseRoutes(app: FastifyInstance): Promise<void>
             attempts: row.attempts,
             maxAttempts: row.max_attempts,
             progress: row.progress,
-            result: row.result,
+            ...(!summary ? { result: row.result } : {}),
             error: row.error_text,
             createdAt: row.created_at,
             startedAt: row.started_at,

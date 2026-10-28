@@ -27,7 +27,7 @@ import {
     type ManagedModule,
     type ManagedServer,
     type Project,
-    type ProjectDetail,
+    type ProjectSummary,
     type ServerDetail,
     type ServerDirectory
 } from './api.js'
@@ -405,8 +405,8 @@ export function NewServerPage({ user }: { user: ApiUser }): ReactNode {
     const { t } = useTranslation()
     const navigate = useNavigate()
     const detail = useQuery({
-        queryKey: ['project', projectId],
-        queryFn: () => api<ProjectDetail>(`/api/v1/projects/${projectId}`)
+        queryKey: ['project', projectId, 'summary'],
+        queryFn: () => api<ProjectSummary>(`/api/v1/projects/${projectId}?view=summary`)
     })
     if (detail.isLoading) return <div className="loading">NEBULA</div>
     if (!detail.data) return <ErrorNotice error={detail.error} />

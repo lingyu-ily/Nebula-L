@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from 'fastify'
+import type { Role } from '@nebula/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { sendProblem } from '../http.js'
 
@@ -28,15 +29,15 @@ import { registerReleaseRoutes } from './releases.js'
 
 const apps: FastifyInstance[] = []
 
-async function createApp(): Promise<FastifyInstance> {
+async function createApp(role: Role | null = 'EDITOR'): Promise<FastifyInstance> {
     const app = Fastify()
     apps.push(app)
     app.setErrorHandler(sendProblem)
     app.addHook('onRequest', async request => {
-        request.auth = {
+        if (role) request.auth = {
             id: 'editor-1',
             username: 'editor',
-            role: 'EDITOR',
+            role,
             mustChangePassword: false,
             sessionTokenHash: 'session',
             csrfToken: 'csrf-token'
@@ -112,7 +113,7 @@ describe('publish routes', () => {
         mocks.execute.mockResolvedValueOnce([[
             {
                 id: 'publish-8', project_id: 'project-1', kind: 'PUBLISH', status: 'SUCCEEDED',
-                attempts: 1, max_attempts: 3, progress: 100, result: null, error_text: null,
+                attempts: 1, max_attempts: 3, progress: 100, result: { metrics: { durationMs: 12 } }, error_text: null,
                 created_at: new Date('2026-08-24T00:00:00Z'), started_at: null, completed_at: null
             }
         ]])
@@ -121,7 +122,38 @@ describe('publish routes', () => {
         const response = await app.inject('/api/v1/projects/project-1/jobs')
 
         expect(response.statusCode).toBe(200)
-        expect(response.json()).toMatchObject({ items: [{ id: 'publish-8', status: 'SUCCEEDED' }] })
+        expect(response.json()).toMatchObject({ items: [{ id: 'publish-8', status: 'SUCCEEDED', result: { metrics: { durationMs: 12 } } }] })
+    })
+
+    it.each(['ADMIN', 'EDITOR', 'AUDITOR'] as const)('omits large results from summary queries and preserves pagination for %s', async role => {
+        const row = {
+            id: 'publish-8', project_id: 'project-1', kind: 'PUBLISH', status: 'SUCCEEDED',
+            attempts: 1, max_attempts: 3, progress: 100, result: { legacy: 'x'.repeat(20 * 1024 * 1024) },
+            error_text: null, created_at: new Date('2026-08-24T00:00:00Z'), started_at: null, completed_at: null
+        }
+        mocks.execute.mockResolvedValue([[row, { ...row, id: 'publish-7' }]])
+        const app = await createApp(role)
+        const response = await app.inject('/api/v1/projects/project-1/jobs?view=summary&limit=1&offset=5')
+
+        expect(response.statusCode).toBe(200)
+        expect(response.json()).toMatchObject({
+            items: [{ id: row.id, status: row.status, progress: 100 }], limit: 1, offset: 5, hasMore: true
+        })
+        expect(response.json().items).toHaveLength(1)
+        expect(response.json().items[0]).not.toHaveProperty('result')
+        expect(Buffer.byteLength(response.body)).toBeLessThan(1024)
+        const [sql, parameters] = mocks.execute.mock.calls[0] as [string, unknown[]]
+        expect(sql).not.toMatch(/\bresult\b|\bsnapshot\b|SELECT \*/)
+        expect(parameters).toEqual(['project-1', 2, 5])
+
+        mocks.execute.mockResolvedValue([[{ ...row, result: null }, { ...row, id: 'publish-7', result: null }]])
+        expect((await app.inject('/api/v1/projects/project-1/jobs?view=summary&limit=1&offset=5')).body).toBe(response.body)
+    })
+
+    it('requires authentication for job summaries', async () => {
+        const app = await createApp(null)
+        expect((await app.inject('/api/v1/projects/project-1/jobs?view=summary')).statusCode).toBe(401)
+        expect(mocks.execute).not.toHaveBeenCalled()
     })
 
     it('does not expose release history or rollback endpoints', async () => {

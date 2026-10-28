@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Link, Navigate, Route, Routes, useNavigate, useParams } from './router.js'
@@ -11,10 +11,10 @@ import {
     type AuditLog,
     type AuthResponse,
     type DisabledProject,
-    type Job,
+    type JobSummary,
     type PaginatedResponse,
     type Project,
-    type ProjectDetail
+    type ProjectSummary
 } from './api.js'
 import {
     NewServerPage,
@@ -342,7 +342,7 @@ function AnalyticsPage(): ReactNode {
     </>
 }
 
-function ProjectSettings({ detail, canEdit }: { detail: ProjectDetail, canEdit: boolean }): ReactNode {
+function ProjectSettings({ detail, canEdit }: { detail: ProjectSummary, canEdit: boolean }): ReactNode {
     const { t } = useTranslation()
     const queryClient = useQueryClient()
     const update = useMutation({
@@ -402,7 +402,7 @@ function LauncherPanel({ project }: { project: Project }): ReactNode {
     </section>
 }
 
-function ServerPanel({ detail, canEdit }: { detail: ProjectDetail, canEdit: boolean }): ReactNode {
+function ServerPanel({ detail, canEdit }: { detail: ProjectSummary, canEdit: boolean }): ReactNode {
     const { t } = useTranslation()
     const queryClient = useQueryClient()
     const [orderedIds, setOrderedIds] = useState(() => detail.servers.map(server => server.id))
@@ -418,7 +418,7 @@ function ServerPanel({ detail, canEdit }: { detail: ProjectDetail, canEdit: bool
             ...jsonBody({ draftVersion: detail.project.draftVersion, serverIds })
         }),
         onSuccess: (response, serverIds) => {
-            queryClient.setQueryData<ProjectDetail>(['project', detail.project.id], current => {
+            queryClient.setQueryData<ProjectSummary>(['project', detail.project.id, 'summary'], current => {
                 if (!current) return current
                 const serversById = new Map(current.servers.map(server => [server.id, server]))
                 return {
@@ -468,7 +468,7 @@ function ServerPanel({ detail, canEdit }: { detail: ProjectDetail, canEdit: bool
     </section>
 }
 
-function CurseForgePanel({ detail, canEdit }: { detail: ProjectDetail, canEdit: boolean }): ReactNode {
+function CurseForgePanel({ detail, canEdit }: { detail: ProjectSummary, canEdit: boolean }): ReactNode {
     const { t } = useTranslation()
     const queryClient = useQueryClient()
     const importPack = useMutation({
@@ -529,19 +529,23 @@ function ReleasePanel({ project, canEdit }: { project: Project, canEdit: boolean
     const { t } = useTranslation()
     const queryClient = useQueryClient()
     const [jobPage, setJobPage] = useState(0)
+    const refreshedPublishId = useRef<string | null>(null)
     const jobs = useQuery({
-        queryKey: ['jobs', project.id, jobPage],
-        queryFn: () => api<PaginatedResponse<Job>>(`/api/v1/projects/${project.id}/jobs?limit=${HISTORY_PAGE_SIZE}&offset=${jobPage * HISTORY_PAGE_SIZE}`),
+        queryKey: ['jobs', project.id, 'summary', jobPage],
+        queryFn: () => api<PaginatedResponse<JobSummary>>(`/api/v1/projects/${project.id}/jobs?view=summary&limit=${HISTORY_PAGE_SIZE}&offset=${jobPage * HISTORY_PAGE_SIZE}`),
         refetchInterval: jobPage === 0 ? 3000 : false
     })
     const latestSuccessfulPublishId = jobs.data?.items.find(job =>
         job.kind === 'PUBLISH' && job.status === 'SUCCEEDED'
     )?.id
     useEffect(() => {
-        if (!latestSuccessfulPublishId) return
+        if (jobPage !== 0 || !latestSuccessfulPublishId
+            || latestSuccessfulPublishId === project.currentPublishId
+            || latestSuccessfulPublishId === refreshedPublishId.current) return
+        refreshedPublishId.current = latestSuccessfulPublishId
         void queryClient.invalidateQueries({ queryKey: ['projects'] })
-        void queryClient.invalidateQueries({ queryKey: ['project', project.id] })
-    }, [latestSuccessfulPublishId, project.id, queryClient])
+        void queryClient.invalidateQueries({ queryKey: ['project', project.id, 'summary'] })
+    }, [jobPage, latestSuccessfulPublishId, project.id, project.currentPublishId, queryClient])
     const retry = useMutation({ mutationFn: (id: string) => api(`/api/v1/jobs/${id}/retry`, { method: 'POST' }), onSuccess: () => void jobs.refetch() })
     return <section className="card"><h2>{t('jobs')}</h2>{jobs.data?.items.map(job => <div className="timeline-row" key={job.id}>
         <span className={`job-state state-${job.status.toLowerCase()}`} />
@@ -569,7 +573,7 @@ function ProjectPage({ user }: { user: ApiUser }): ReactNode {
     const { t } = useTranslation()
     const queryClient = useQueryClient()
     const navigate = useNavigate()
-    const detail = useQuery({ queryKey: ['project', projectId], queryFn: () => api<ProjectDetail>(`/api/v1/projects/${projectId}`) })
+    const detail = useQuery({ queryKey: ['project', projectId, 'summary'], queryFn: () => api<ProjectSummary>(`/api/v1/projects/${projectId}?view=summary`) })
     const publish = useMutation({
         mutationFn: (draftVersion: number) => api<{ jobId: string }>(`/api/v1/projects/${projectId}/publish`, { method: 'POST', ...jsonBody({ draftVersion }) }),
         onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['jobs', projectId] })
@@ -578,7 +582,7 @@ function ProjectPage({ user }: { user: ApiUser }): ReactNode {
         mutationFn: (draftVersion: number) => api(`/api/v1/projects/${projectId}`, { method: 'DELETE', ...jsonBody({ draftVersion }) }),
         onSuccess: () => {
             void queryClient.invalidateQueries({ queryKey: ['projects'] })
-            queryClient.removeQueries({ queryKey: ['project', projectId], exact: true })
+            queryClient.removeQueries({ queryKey: ['project', projectId] })
             navigate('/projects', { replace: true })
         }
     })

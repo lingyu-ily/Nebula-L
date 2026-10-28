@@ -423,6 +423,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
 
     app.get('/api/v1/projects/:projectId', { preHandler: requireRole('ADMIN', 'EDITOR', 'AUDITOR') }, async request => {
         const { projectId } = request.params as { projectId: string }
+        const summary = (request.query as { view?: string }).view === 'summary'
         const [projectRows] = await getPool().execute<ProjectRow[]>(
             'SELECT * FROM projects WHERE id = ? AND disabled = FALSE',
             [projectId]
@@ -435,6 +436,15 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
             'SELECT * FROM servers WHERE project_id = ? ORDER BY sort_order, name, id',
             [projectId]
         )
+        const stableDistributionReady = await isStableDistributionReady(
+            project.id,
+            project.slug,
+            project.active_release_id
+        )
+        const projectDetail = { ...mapProject(project), stableDistributionReady }
+        if (summary) {
+            return { project: projectDetail, servers: serverRows.map(mapServer) }
+        }
         const [moduleRows] = await getPool().execute<ModuleRow[]>(
             `SELECT m.*, u.original_name, u.size, u.md5, u.sha256
              FROM modules m LEFT JOIN uploads u ON u.id = m.upload_id
@@ -446,13 +456,8 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
              WHERE s.project_id = ? ORDER BY r.applies_to, r.pattern`,
             [projectId]
         )
-        const stableDistributionReady = await isStableDistributionReady(
-            project.id,
-            project.slug,
-            project.active_release_id
-        )
         return {
-            project: { ...mapProject(project), stableDistributionReady },
+            project: projectDetail,
             servers: serverRows.map(row => ({
                 ...mapServer(row),
                 modules: moduleRows.filter(module => module.server_id === row.id).map(mapModule),

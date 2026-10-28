@@ -107,6 +107,13 @@ export interface ProjectDetail {
     servers: ManagedServer[]
 }
 
+export type ManagedServerSummary = Omit<ManagedServer, 'modules' | 'untrackedRules'>
+
+export interface ProjectSummary {
+    project: Project
+    servers: ManagedServerSummary[]
+}
+
 export interface ServerDirectory {
     id: string
     path: string
@@ -138,6 +145,8 @@ export interface Job {
     error: string | null
     createdAt: string
 }
+
+export type JobSummary = Omit<Job, 'result'>
 
 export interface AuditLog {
     id: number

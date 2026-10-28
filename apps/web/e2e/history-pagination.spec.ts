@@ -94,7 +94,7 @@ test('paginates publish jobs in groups of five', async ({ page }) => {
     await expect(jobCard.locator('.timeline-row')).toHaveCount(1)
     await expect(jobPages.getByText('Page 2')).toBeVisible()
     await expect(jobPages.getByRole('button', { name: 'Next' })).toBeDisabled()
-    await expect.poll(() => history.jobQueries.some(query => query === '?limit=5&offset=5')).toBe(true)
+    await expect.poll(() => history.jobQueries.some(query => query === '?view=summary&limit=5&offset=5')).toBe(true)
 
     await jobCard.getByRole('button', { name: 'Retry' }).click()
     await expect.poll(() => history.retriedJobs).toEqual(['job-6'])

@@ -12,6 +12,8 @@ The cleanup worker retries once per minute. It preserves queued/running work, re
 
 Job results include `metrics`: parse/loader/object cache hits, S3 requests by command, successful payload bytes downloaded/uploaded/copied and total duration. Request counts include SDK retries; byte counters describe successful logical payload transfers, not HTTP overhead or retransmissions. Normal publish statistics include synchronous cleanup; later recovery and maintenance have separate application logs.
 
+The Console loads project metadata with `GET /api/v1/projects/:projectId?view=summary`, which omits server `modules` and `untrackedRules` without querying their tables. It polls the first job page every three seconds with `GET /api/v1/projects/:projectId/jobs?view=summary&limit=5&offset=0`, which omits `result` from both the SQL projection and response. Omit `view` (or use `view=full`) for the existing complete responses, including publish metrics. Historical job pages do not poll. A newly successful publish refreshes the project summary once; the already active publish does not trigger an extra project request.
+
 ## Validation
 
 Run `npm test`, `npm run build`, and `npm run lint`. The normal test suite includes a loopback HTTP S3 protocol fixture using the real AWS SDK. SQL recovery/cleanup and incremental builds also have focused unit tests.
