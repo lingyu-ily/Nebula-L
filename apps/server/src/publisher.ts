@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto'
+import { createServerGroup } from './server-groups.js'
 import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { basename, dirname, extname, join, relative, sep } from 'path'
@@ -63,6 +64,10 @@ export interface SnapshotModule {
 }
 
 export interface SnapshotServer {
+    groupId?: string
+    defaultVersionId?: string
+    distributionId?: string
+    versionName?: string
     id: string
     revision: number
     serverKey: string
@@ -315,7 +320,7 @@ export async function buildProjectSnapshot(connection: PoolConnection, projectId
         throw new Error('Project not found')
     }
     const [serverRows] = await connection.query<ServerSnapshotRow[]>(
-        `SELECT s.*, u.object_key AS icon_object_key, u.original_name AS icon_original_name,
+        `SELECT s.*, g.default_version_id, g.sort_order AS group_sort_order, g.main_server AS group_main_server, u.object_key AS icon_object_key, u.original_name AS icon_original_name,
                 u.mime_type AS icon_mime_type, u.size AS icon_size, u.md5 AS icon_md5, u.sha256 AS icon_sha256,
                 bg.object_key AS hero_background_object_key, bg.original_name AS hero_background_original_name,
                 bg.mime_type AS hero_background_mime_type, bg.size AS hero_background_size,
@@ -327,11 +332,12 @@ export async function buildProjectSnapshot(connection: PoolConnection, projectId
                 video.mime_type AS hero_video_mime_type, video.size AS hero_video_size,
                 video.md5 AS hero_video_md5, video.sha256 AS hero_video_sha256
          FROM servers s
+         LEFT JOIN server_groups g ON g.id = s.group_id AND g.project_id = s.project_id
          LEFT JOIN uploads u ON u.id = s.icon_upload_id AND u.status = 'READY'
          LEFT JOIN uploads bg ON bg.id = s.hero_background_upload_id AND bg.status = 'READY'
          LEFT JOIN uploads logo ON logo.id = s.hero_logo_upload_id AND logo.status = 'READY'
          LEFT JOIN uploads video ON video.id = s.hero_video_upload_id AND video.status = 'READY'
-         WHERE s.project_id = ? ORDER BY s.sort_order, s.name, s.id`,
+         WHERE s.project_id = ? AND s.enabled = TRUE ORDER BY g.sort_order, s.sort_order, s.name, s.id`,
         [projectId]
     )
     const [moduleRows] = await connection.query<ModuleSnapshotRow[]>(
@@ -354,6 +360,10 @@ export async function buildProjectSnapshot(connection: PoolConnection, projectId
         discord: parseJson(project.discord),
         sourceDraftVersion: Number(project.draft_revision),
         servers: serverRows.map(server => ({
+            ...(server.group_id ? {
+                groupId: server.group_id as string, defaultVersionId: server.default_version_id as string,
+                distributionId: server.distribution_id as string, versionName: server.version_name as string
+            } : {}),
             id: server.id,
             revision: Number(server.revision),
             serverKey: server.server_key,
@@ -365,7 +375,7 @@ export async function buildProjectSnapshot(connection: PoolConnection, projectId
             discord: parseJson(server.discord),
             forgeVersion: server.forge_version,
             fabricVersion: server.fabric_version,
-            mainServer: Boolean(server.main_server),
+            mainServer: server.group_id ? Boolean(server.group_main_server) && server.id === server.default_version_id : Boolean(server.main_server),
             autoconnect: Boolean(server.autoconnect),
             sortOrder: server.sort_order,
             javaOptions: parseJson(server.java_options),
@@ -454,6 +464,7 @@ export async function buildProjectSnapshot(connection: PoolConnection, projectId
 }
 
 export function validateSnapshot(snapshot: ProjectSnapshot): void {
+    buildPublishedServerGroups(snapshot)
     if (snapshot.servers.length === 0) {
         throw new Error('A distribution must contain at least one server')
     }
@@ -723,7 +734,7 @@ function duplicateValues(values: string[]): string[] {
 
 export function orderDistribution(distribution: Distribution, snapshot: ProjectSnapshot): void {
     const snapshotServers = snapshot.servers.map(server => ({
-        id: ServerStructure.getEffectiveId(server.serverKey, new MinecraftVersion(server.minecraftVersion)),
+        id: effectiveVersionId(server),
         server
     }))
     const snapshotIds = snapshotServers.map(value => value.id)
@@ -763,7 +774,7 @@ function normalizedArtifactPath(path: string): string {
 
 export function applyChecksumValidation(distribution: Distribution, snapshot: ProjectSnapshot): void {
     const sourceById = new Map(snapshot.servers.map(server => [
-        ServerStructure.getEffectiveId(server.serverKey, new MinecraftVersion(server.minecraftVersion)),
+        effectiveVersionId(server),
         server
     ]))
     for (const server of distribution.servers) {
@@ -855,10 +866,7 @@ export function selectReusableServerBuilds(
     const dirtyServerIds: string[] = []
     for (const server of snapshot.servers) {
         const cached = cacheByRevision.get(`${server.id}:${server.revision}`)
-        const expectedServerId = ServerStructure.getEffectiveId(
-            server.serverKey,
-            new MinecraftVersion(server.minecraftVersion)
-        )
+        const expectedServerId = effectiveVersionId(server)
         if (cached?.spec.id === expectedServerId) {
             reused.push(cached)
         } else {
@@ -868,8 +876,38 @@ export function selectReusableServerBuilds(
     return { reused, dirtyServerIds }
 }
 
+export function effectiveVersionId(server: SnapshotServer): string {
+    return server.distributionId ?? ServerStructure.getEffectiveId(server.serverKey, new MinecraftVersion(server.minecraftVersion))
+}
+
+export interface PublishedServerGroup {
+    id: string
+    name: string
+    icon: string
+    defaultVersionId: string
+    versionIds: string[]
+}
+
+export function buildPublishedServerGroups(snapshot: ProjectSnapshot, icons: ReadonlyMap<string, string> = new Map()): PublishedServerGroup[] | undefined {
+    if (!snapshot.servers.some(server => server.groupId)) return undefined
+    const groups = new Map<string, PublishedServerGroup>()
+    for (const server of snapshot.servers) {
+        const groupId = server.groupId ?? server.id
+        let group = groups.get(groupId)
+        if (!group) {
+            const defaultVersion = snapshot.servers.find(candidate => candidate.id === server.defaultVersionId && candidate.groupId === server.groupId)
+            if (!defaultVersion) throw new PermanentJobError('A server group has no enabled default version')
+            group = { id: groupId, name: server.name, icon: icons.get(effectiveVersionId(defaultVersion)) ?? '', defaultVersionId: effectiveVersionId(defaultVersion), versionIds: [] }
+            groups.set(groupId, group)
+        }
+        group.versionIds.push(effectiveVersionId(server))
+    }
+    return [...groups.values()]
+}
+
 export interface PublishedDistribution extends Omit<Distribution, 'servers'> {
     distributionFormat: 2
+    serverGroups?: PublishedServerGroup[]
     servers: ServerDistributionReference[]
     telemetry: {
         anonymousDailyActive: {
@@ -984,8 +1022,10 @@ export async function publishJob(job: JobRow): Promise<void> {
             await cache.load()
             await heartbeat(job.id, 5)
             const servers: ServerDistributionReference[] = []
+            const versionIcons = new Map<string, string>()
             for (let index = 0; index < snapshot.servers.length; index++) {
                 const server = await buildIncrementalServer(cache, snapshot, snapshot.servers[index])
+                versionIcons.set(server.id, server.icon ?? '')
                 servers.push(await publishServerDistribution(snapshot.slug, server))
                 await heartbeat(job.id, 10 + Math.floor((index + 1) / snapshot.servers.length * 70))
             }
@@ -993,7 +1033,8 @@ export async function publishJob(job: JobRow): Promise<void> {
                 distributionFormat: 2,
                 version: '1.0.0', rss: snapshot.rss,
                 ...(snapshot.discord ? { discord: snapshot.discord as Distribution['discord'] } : {}),
-                telemetry: buildLauncherTelemetry(getConfig().appBaseUrl, snapshot.slug), servers
+                telemetry: buildLauncherTelemetry(getConfig().appBaseUrl, snapshot.slug), servers,
+                ...(snapshot.servers.some(server => server.groupId) ? { serverGroups: buildPublishedServerGroups(snapshot, versionIcons) } : {})
             }
             await heartbeat(job.id, 85)
             // Durable candidate refs exist before the fixed key can change.
@@ -1145,6 +1186,7 @@ export async function importCurseForgeJob(job: JobRow): Promise<void> {
                     nextSortOrder === 0, nextSortOrder
                 ]
             )
+            await createServerGroup(connection, serverId)
             for (const artifact of storedArtifacts) {
                 await connection.execute(
                     `INSERT INTO uploads (

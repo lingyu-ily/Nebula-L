@@ -50,7 +50,7 @@ beforeEach(() => {
     mocks.ready.mockResolvedValue(true)
     mocks.execute.mockImplementation(async (sql: string) => {
         if (sql.includes('FROM projects')) return [[project]]
-        if (sql.includes('FROM servers WHERE')) return [[server]]
+        if (sql.includes('FROM servers s')) return [[server]]
         if (sql.includes('FROM modules')) return [[moduleRow]]
         if (sql.includes('FROM untracked_rules')) return [[rule]]
         throw new Error(`Unexpected query: ${sql}`)
@@ -98,7 +98,7 @@ describe('project summary', () => {
         }))
         mocks.execute.mockImplementation(async (sql: string) => {
             if (sql.includes('FROM projects')) return [[project]]
-            if (sql.includes('FROM servers WHERE')) return [[server]]
+            if (sql.includes('FROM servers s')) return [[server]]
             if (sql.includes('FROM modules')) return [modules]
             if (sql.includes('FROM untracked_rules')) return [[rule]]
             throw new Error(`Unexpected query: ${sql}`)

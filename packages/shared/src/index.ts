@@ -125,6 +125,57 @@ export const serverOrderInputSchema = z.object({
     )
 })
 
+export const serverVersionCreateSchema = z.object({
+    draftVersion: z.number().int().min(0),
+    versionName: z.string().trim().min(1).max(128),
+    sourceVersionId: z.uuid().optional(),
+    server: serverInputSchema.optional()
+}).refine(value => Boolean(value.sourceVersionId) !== Boolean(value.server), {
+    message: 'Provide either a source version or new version settings'
+})
+
+export const serverVersionPatchSchema = z.object({
+    draftVersion: z.number().int().min(0),
+    versionName: z.string().trim().min(1).max(128).optional(),
+    enabled: z.boolean().optional()
+})
+
+export const serverGroupUpdateSchema = z.object({
+    draftVersion: z.number().int().min(0),
+    name: z.string().trim().min(1).max(128),
+    description: z.string().max(2000).default(''),
+    mainServer: z.boolean(),
+    defaultVersionId: z.uuid()
+})
+
+export const versionDeleteSchema = z.object({
+    draftVersion: z.number().int().min(0),
+    confirmName: z.string().min(1).max(128)
+})
+
+export interface ServerVersionSummary {
+    id: string
+    groupId: string
+    versionName: string
+    enabled: boolean
+    distributionId: string
+    minecraftVersion: string
+    serverVersion: string
+    forgeVersion: string | null
+    fabricVersion: string | null
+    sortOrder: number
+}
+
+export interface ServerGroupDetail {
+    id: string
+    name: string
+    description: string
+    defaultVersionId: string
+    mainServer: boolean
+    sortOrder: number
+    versions: ServerVersionSummary[]
+}
+
 export const versionCatalogLoaderSchema = z.enum(['forge', 'fabric'])
 export type VersionCatalogLoader = z.infer<typeof versionCatalogLoaderSchema>
 

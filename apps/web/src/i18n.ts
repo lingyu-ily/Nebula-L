@@ -4,6 +4,9 @@ import { initReactI18next } from 'react-i18next'
 
 const en = {
     translation: {
+        confirmDeleteGroup: 'Type {{name}} to permanently delete this server and all its versions.',
+        sharedLauncherPage: 'Shared presentation', sharedPresentationHint: 'Background, logo, video, and news settings apply to every version of this server.',
+        versions: 'Versions', versionName: 'Version name', newVersion: 'Add version', versionSource: 'Copy from', blankVersion: 'Start empty', cloneVersion: 'Copy version', defaultVersion: 'Default', setDefaultVersion: 'Set as default', disabledVersion: 'Disabled', deleteVersion: 'Permanently delete version', editingVersion: 'Editing version', sharedName: 'Server name (shared by all versions)', versionCount: '{{count}} versions', versionPublishHint: 'Changes reach players after publishing the distribution. Each version has its own game directory; presentation is shared. Choose another default before disabling or deleting the default version.', confirmDeleteVersion: 'Type {{name}} to permanently delete this version. Existing published files and player saves are retained until no longer referenced.',
         controlPlane: 'DISTRIBUTION CONTROL', workspace: 'Workspace', navigation: 'Main navigation', openNavigation: 'Open navigation', closeNavigation: 'Close navigation', skipContent: 'Skip to content',
         motionEffects: 'Motion effects', motionSystem: 'Motion is reduced by your system preference.', consoleHint: 'One workspace. Every distribution.', workspaceSummary: 'Workspace summary',
         projectsHint: 'Your distributions, connected. Build, manage, and publish from one place.', totalDistributions: 'Total distributions', publishedDistributions: 'Published', draftDistributions: 'Unpublished',
@@ -59,6 +62,9 @@ const en = {
 
 const zhTW = {
     translation: {
+        confirmDeleteGroup: '輸入 {{name}} 以永久刪除此伺服器及其所有版本。',
+        sharedLauncherPage: '共用展示', sharedPresentationHint: '背景、Logo、影片與公告設定會套用至此伺服器的所有版本。',
+        versions: '版本管理', versionName: '版本名稱', newVersion: '新增版本', versionSource: '建立來源', blankVersion: '從空白建立', cloneVersion: '複製版本', defaultVersion: '預設版本', setDefaultVersion: '設為預設', disabledVersion: '已停用', deleteVersion: '永久刪除版本', editingVersion: '目前編輯版本', sharedName: '伺服器名稱（所有版本共用）', versionCount: '{{count}} 個版本', versionPublishHint: '修改需發布專案後才會對玩家生效。各版本遊戲目錄獨立，展示設定共用。停用或刪除預設版本前，請先指定另一個預設版本。', confirmDeleteVersion: '輸入 {{name}} 以永久刪除此版本。已發布檔案在仍被引用期間會保留；玩家存檔不會自動刪除。',
         controlPlane: 'DISTRIBUTION 管理中心', workspace: '工作空間', navigation: '主導覽', openNavigation: '開啟導覽', closeNavigation: '關閉導覽', skipContent: '跳至主要內容',
         motionEffects: '動態效果', motionSystem: '已依系統偏好減少動態效果。', consoleHint: '一個工作空間，掌握所有 Distribution。', workspaceSummary: '工作空間摘要',
         projectsHint: '集中管理每個世界，從建置、設定到發布，一站完成。', totalDistributions: 'Distribution 總數', publishedDistributions: '已發布', draftDistributions: '尚未發布',

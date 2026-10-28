@@ -19,6 +19,7 @@ import {
     registerLauncherUsageRoutes,
     registerPublicLauncherUsageRoutes
 } from './routes/launcher-usage.js'
+import { registerServerGroupRoutes } from './routes/server-groups.js'
 import { registerProjectRoutes } from './routes/projects.js'
 import { registerReleaseRoutes } from './routes/releases.js'
 import { registerServerManagementRoutes } from './routes/server-management.js'
@@ -81,6 +82,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     await registerAuthRoutes(app)
     await registerUserRoutes(app)
     await registerProjectRoutes(app)
+    await registerServerGroupRoutes(app)
     await registerServerManagementRoutes(app)
     await registerUploadRoutes(app)
     await registerReleaseRoutes(app)

@@ -22,7 +22,8 @@ import {
     ServerLauncherPage,
     ServerOverviewPage,
     ServerRootRedirect,
-    ServerSettingsPage
+    ServerSettingsPage,
+    ServerVersionsPage
 } from './server-pages.js'
 import { BuildVersion } from './BuildVersion.js'
 import { ConsoleShell as Shell } from './visual/ConsoleShell.js'
@@ -405,30 +406,20 @@ function LauncherPanel({ project }: { project: Project }): ReactNode {
 function ServerPanel({ detail, canEdit }: { detail: ProjectSummary, canEdit: boolean }): ReactNode {
     const { t } = useTranslation()
     const queryClient = useQueryClient()
-    const [orderedIds, setOrderedIds] = useState(() => detail.servers.map(server => server.id))
+    const displayServers = detail.servers.filter(server => !server.defaultVersionId || server.defaultVersionId === server.id)
+    const [orderedIds, setOrderedIds] = useState(() => displayServers.map(server => server.id))
     const [announcement, setAnnouncement] = useState('')
     const orderedServers = orderedIds.flatMap(id => {
         const server = detail.servers.find(candidate => candidate.id === id)
         return server ? [server] : []
     })
-    const orderChanged = orderedIds.some((id, index) => id !== detail.servers[index]?.id)
+    const orderChanged = orderedIds.some((id, index) => id !== displayServers[index]?.id)
     const saveOrder = useMutation({
-        mutationFn: (serverIds: string[]) => api<{ updated: boolean, draftVersion: number }>(`/api/v1/projects/${detail.project.id}/servers/order`, {
+        mutationFn: (serverIds: string[]) => api<{ updated: boolean, draftVersion: number }>(`/api/v1/projects/${detail.project.id}/${detail.servers.some(server => server.groupId) ? 'server-groups' : 'servers'}/order`, {
             method: 'PUT',
-            ...jsonBody({ draftVersion: detail.project.draftVersion, serverIds })
+            ...jsonBody({ draftVersion: detail.project.draftVersion, serverIds: serverIds.map(id => detail.servers.find(server => server.id === id)?.groupId ?? id) })
         }),
-        onSuccess: (response, serverIds) => {
-            queryClient.setQueryData<ProjectSummary>(['project', detail.project.id, 'summary'], current => {
-                if (!current) return current
-                const serversById = new Map(current.servers.map(server => [server.id, server]))
-                return {
-                    project: { ...current.project, draftVersion: response.draftVersion },
-                    servers: serverIds.flatMap((id, sortOrder) => {
-                        const server = serversById.get(id)
-                        return server ? [{ ...server, sortOrder }] : []
-                    })
-                }
-            })
+        onSuccess: () => {
             void queryClient.invalidateQueries({ queryKey: ['project', detail.project.id] })
         }
     })
@@ -454,7 +445,7 @@ function ServerPanel({ detail, canEdit }: { detail: ProjectSummary, canEdit: boo
         </div>}</div>
         <div className="server-list">
             {orderedServers.map((server, index) => <article className="server-row" key={server.id}>
-                <div className="server-primary"><span className="server-order-position" aria-label={t('serverPosition', { position: index + 1 })}>{index + 1}</span><div><span className="server-version">MC {server.minecraftVersion}</span><h3>{server.name}</h3><p><code>{server.serverKey}</code> · {server.address}</p></div></div>
+                <div className="server-primary"><span className="server-order-position" aria-label={t('serverPosition', { position: index + 1 })}>{index + 1}</span><div><span className="server-version">MC {server.minecraftVersion}</span><h3>{server.name}</h3><span className="pill">{t('versionCount', { count: detail.servers.filter(version => (version.groupId ?? version.id) === (server.groupId ?? server.id)).length })}</span><p><code>{server.serverKey}</code> · {server.address}</p></div></div>
                 <div className="server-meta"><span>{server.forgeVersion ? `Forge ${server.forgeVersion}` : server.fabricVersion ? `Fabric ${server.fabricVersion}` : t('loaderNone')}</span>{server.mainServer && <span className="pill">{t('mainServer')}</span>}</div>
                 <div className="row-actions">{canEdit && <div className="server-order-controls">
                     <button type="button" disabled={index === 0 || saveOrder.isPending} aria-label={t('moveServerUp', { name: server.name })} onClick={() => moveServer(index, -1)}>↑</button>
@@ -681,6 +672,7 @@ export function App(): ReactNode {
         <Route path="/projects/:projectId/servers/new" element={<NewServerPage user={user} />} />
         <Route path="/projects/:projectId/servers/:serverId" element={<ServerRootRedirect />} />
         <Route path="/projects/:projectId/servers/:serverId/overview" element={<ServerOverviewPage />} />
+        <Route path="/projects/:projectId/servers/:serverId/versions" element={<ServerVersionsPage user={user} />} />
         <Route path="/projects/:projectId/servers/:serverId/settings" element={<ServerSettingsPage user={user} />} />
         <Route path="/projects/:projectId/servers/:serverId/launcher" element={<ServerLauncherPage user={user} />} />
         <Route path="/projects/:projectId/servers/:serverId/files" element={<ServerFilesPage user={user} />} />

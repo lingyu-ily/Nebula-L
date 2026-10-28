@@ -46,6 +46,12 @@ interface ProjectRow extends RowDataPacket {
 }
 
 interface ServerRow extends RowDataPacket {
+    group_id?: string
+    version_name?: string
+    enabled?: number
+    distribution_id?: string
+    default_version_id?: string
+    group_sort_order?: number
     id: string
     project_id: string
     server_key: string
@@ -133,6 +139,12 @@ function mapServer(row: ServerRow): Record<string, unknown> {
     return {
         id: row.id,
         projectId: row.project_id,
+        groupId: row.group_id ?? row.id,
+        versionName: row.version_name ?? row.server_version,
+        enabled: row.enabled == null ? true : Boolean(row.enabled),
+        distributionId: row.distribution_id ?? (row.server_key + '-' + row.minecraft_version),
+        defaultVersionId: row.default_version_id ?? row.id,
+        groupSortOrder: row.group_sort_order ?? row.sort_order,
         serverKey: row.server_key,
         name: row.name,
         description: row.description,
@@ -327,7 +339,7 @@ export async function registerServerManagementRoutes(app: FastifyInstance): Prom
             throw new HttpError(404, 'Project not found')
         }
         const [serverRows] = await getPool().execute<ServerRow[]>(
-            'SELECT * FROM servers WHERE id = ? AND project_id = ?',
+            'SELECT s.*, g.default_version_id, g.sort_order AS group_sort_order FROM servers s LEFT JOIN server_groups g ON g.id = s.group_id WHERE s.id = ? AND s.project_id = ?',
             [serverId, projectId]
         )
         const server = serverRows[0]

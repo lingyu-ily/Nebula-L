@@ -334,3 +334,7 @@ h1, h2, h3, p, dd { overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+.version-row { padding: 20px 0; border-bottom: 1px solid var(--border, #ffffff20); }
+.version-row .actions { flex-wrap: wrap; align-items: end; margin-top: 12px; }
+.version-row .actions label { min-width: 180px; }

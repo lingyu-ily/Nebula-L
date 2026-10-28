@@ -1,3 +1,4 @@
+import type { ServerGroupDetail } from '@nebula/shared'
 import {
     useEffect,
     useMemo,
@@ -137,8 +138,9 @@ function useServerDetail(projectId: string, serverId: string): ReturnType<typeof
     })
 }
 
-function invalidateServer(queryClient: ReturnType<typeof useQueryClient>, projectId: string, serverId: string): void {
-    void queryClient.invalidateQueries({ queryKey: ['server', projectId, serverId] })
+function invalidateServer(queryClient: ReturnType<typeof useQueryClient>, projectId: string): void {
+    void queryClient.invalidateQueries({ queryKey: ['server', projectId] })
+    void queryClient.invalidateQueries({ queryKey: ['server-groups', projectId] })
     void queryClient.invalidateQueries({ queryKey: ['project', projectId] })
 }
 
@@ -158,6 +160,7 @@ function ServerHeader({ detail }: { detail: ServerDetail }): ReactNode {
                 <h1>{detail.server.name}</h1>
                 <p>
                     <code>{detail.server.serverKey}</code>
+                    {' · '}{t('editingVersion')}: {detail.server.versionName ?? detail.server.serverVersion}
                     {' · '}MC {detail.server.minecraftVersion}
                     {' · '}{loaderLabel(detail.server, t('loaderNone'))}
                 </p>
@@ -170,8 +173,9 @@ function ServerHeader({ detail }: { detail: ServerDetail }): ReactNode {
         </header>
         <nav className="server-tabs" aria-label={t('serverNavigation')}>
             <NavLink to={`${base}/overview`}>{t('overview')}</NavLink>
+            <NavLink to={`${base}/versions`}>{t('versions')}</NavLink>
             <NavLink to={`${base}/settings`}>{t('settings')}</NavLink>
-            <NavLink to={`${base}/launcher`}>{t('launcherPage')}</NavLink>
+            <NavLink to={`${base}/launcher`}>{t(detail.server.groupId ? 'sharedLauncherPage' : 'launcherPage')}</NavLink>
             <NavLink to={`${base}/files`}>{t('files')}</NavLink>
         </nav>
     </>
@@ -181,11 +185,13 @@ interface ServerFormProps {
     project: Project
     server?: ManagedServer
     initialSortOrder?: number
+    group?: { id: string, name: string, description: string }
+    versionName?: string
     canEdit: boolean
     onDone: (serverId?: string) => void
 }
 
-function ServerForm({ project, server, initialSortOrder, canEdit, onDone }: ServerFormProps): ReactNode {
+function ServerForm({ project, server, initialSortOrder, group, versionName, canEdit, onDone }: ServerFormProps): ReactNode {
     const { t } = useTranslation()
     const queryClient = useQueryClient()
     const initialLoader = server?.forgeVersion ? 'forge' : server?.fabricVersion ? 'fabric' : 'none'
@@ -231,6 +237,10 @@ function ServerForm({ project, server, initialSortOrder, canEdit, onDone }: Serv
                 })
                 value.iconUploadId = upload.id
             }
+            if(group){
+                return api<{ id?: string }>('/api/v1/projects/' + project.id + '/server-groups/' + group.id + '/versions',
+                    { method: 'POST', ...jsonBody({ draftVersion: project.draftVersion, versionName, server: value }) })
+            }
             return api<{ id?: string }>(
                 server
                     ? `/api/v1/projects/${project.id}/servers/${server.id}`
@@ -241,7 +251,7 @@ function ServerForm({ project, server, initialSortOrder, canEdit, onDone }: Serv
         onSuccess: response => {
             void queryClient.invalidateQueries({ queryKey: ['project', project.id] })
             if (server) {
-                invalidateServer(queryClient, project.id, server.id)
+                invalidateServer(queryClient, project.id)
             }
             onDone(response.id ?? server?.id)
         }
@@ -266,9 +276,9 @@ function ServerForm({ project, server, initialSortOrder, canEdit, onDone }: Serv
         mutation.mutate({
             value: {
                 draftVersion: project.draftVersion,
-                serverKey: String(data.get('serverKey') ?? server?.serverKey),
-                name: String(data.get('name')),
-                description: String(data.get('description')),
+                serverKey: group ? 'new-version' : String(data.get('serverKey') ?? server?.serverKey),
+                name: group?.name ?? String(data.get('name')),
+                description: group?.description ?? String(data.get('description')),
                 minecraftVersion,
                 serverVersion: String(data.get('serverVersion')),
                 address: String(data.get('address')),
@@ -280,7 +290,7 @@ function ServerForm({ project, server, initialSortOrder, canEdit, onDone }: Serv
                 iconUploadId: server?.iconUploadId ?? null,
                 forgeVersion: loader === 'forge' ? loaderVersion : null,
                 fabricVersion: loader === 'fabric' ? loaderVersion : null,
-                mainServer: data.get('mainServer') === 'on',
+                mainServer: !group && (!server?.defaultVersionId || server.defaultVersionId === server.id) && data.get('mainServer') === 'on',
                 autoconnect: data.get('autoconnect') === 'on',
                 sortOrder: server?.sortOrder ?? initialSortOrder ?? 0,
                 javaOptions: supported || suggested || ramMinimum || ramRecommended ? {
@@ -296,9 +306,9 @@ function ServerForm({ project, server, initialSortOrder, canEdit, onDone }: Serv
         })
     }
     return <form className="form-grid server-settings-form" onSubmit={submit}>
-        <label>{t('serverId')}<input name="serverKey" defaultValue={server?.serverKey} disabled={!canEdit || server?.publishedOnce} required /></label>
-        <label>{t('name')}<input name="name" defaultValue={server?.name} disabled={!canEdit} required /></label>
-        <label className="wide">{t('description')}<textarea name="description" defaultValue={server?.description} disabled={!canEdit} /></label>
+        {!group && <label>{t('serverId')}<input name="serverKey" defaultValue={server?.serverKey} disabled={!canEdit || server?.publishedOnce} required /></label>}
+        {!group && <label>{t('sharedName')}<input name="name" defaultValue={server?.name} disabled={!canEdit} required /></label>}
+        {!group && <label className="wide">{t('description')}<textarea name="description" defaultValue={server?.description} disabled={!canEdit} /></label>}
         <label>{t('minecraft')}
             <input
                 name="minecraftVersion"
@@ -382,9 +392,9 @@ function ServerForm({ project, server, initialSortOrder, canEdit, onDone }: Serv
         <label>{t('javaSuggested')}<input name="javaSuggested" type="number" min="8" defaultValue={(server?.javaOptions as { suggestedMajor?: number } | null)?.suggestedMajor} disabled={!canEdit} /></label>
         <label>{t('ramMinimum')}<input name="ramMinimum" type="number" min="512" step="512" defaultValue={(server?.javaOptions as { ram?: { minimum?: number } } | null)?.ram?.minimum} disabled={!canEdit} /></label>
         <label>{t('ramRecommended')}<input name="ramRecommended" type="number" min="512" step="512" defaultValue={(server?.javaOptions as { ram?: { recommended?: number } } | null)?.ram?.recommended} disabled={!canEdit} /></label>
-        <label className="wide file-input">{t('serverIcon')}<input name="icon" type="file" accept="image/png,image/jpeg" disabled={!canEdit} /></label>
+        {!group && <label className="wide file-input">{t('serverIcon')}<input name="icon" type="file" accept="image/png,image/jpeg" disabled={!canEdit} /></label>}
         <label className="wide">{t('untrackedRules')}<textarea name="untrackedRules" defaultValue={server?.untrackedRules.map(rule => `${rule.appliesTo}:${rule.pattern}`).join('\n')} placeholder={t('untrackedHint')} disabled={!canEdit} /></label>
-        <label className="checkbox"><input name="mainServer" type="checkbox" defaultChecked={server?.mainServer} disabled={!canEdit} />{t('mainServer')}</label>
+        {!group && (!server?.defaultVersionId || server.defaultVersionId === server.id) && <label className="checkbox"><input name="mainServer" type="checkbox" defaultChecked={server?.mainServer} disabled={!canEdit} />{t('mainServer')}</label>}
         <label className="checkbox"><input name="autoconnect" type="checkbox" defaultChecked={server?.autoconnect} disabled={!canEdit} />{t('autoconnect')}</label>
         <ErrorNotice error={mutation.error} />
         {canEdit && <div className="actions">
@@ -398,6 +408,111 @@ function LoadingOrError({ query }: { query: ReturnType<typeof useQuery<ServerDet
     if (query.isLoading) return <div className="loading">NEBULA</div>
     if (!query.data) return <ErrorNotice error={query.error} />
     return null
+}
+
+export function ServerVersionsPage({ user }: { user: ApiUser }): ReactNode {
+    const { projectId = '', serverId = '' } = useParams()
+    const detail = useServerDetail(projectId, serverId)
+    if (!detail.data) return <LoadingOrError query={detail} />
+    return <><ServerHeader detail={detail.data} /><ServerVersionsPanel key={detail.data.project.draftVersion} detail={detail.data} user={user} /></>
+}
+
+function ServerVersionsPanel({ detail, user }: { detail: ServerDetail, user: ApiUser }): ReactNode {
+    const { t } = useTranslation()
+    const queryClient = useQueryClient()
+    const navigate = useNavigate()
+    const projectId = detail.project.id
+    const groupId = detail.server.groupId ?? detail.server.id
+    const base = `/api/v1/projects/${projectId}/server-groups/${groupId}`
+    const canEdit = user.role === 'ADMIN' || user.role === 'EDITOR'
+    const [sourceId, setSourceId] = useState('')
+    const [versionName, setVersionName] = useState('')
+    const [deleteId, setDeleteId] = useState<string | null>(null)
+    const [confirmName, setConfirmName] = useState('')
+    const groups = useQuery<ServerGroupDetail[], Error>({
+        queryKey: ['server-groups', projectId],
+        queryFn: () => api(`/api/v1/projects/${projectId}/server-groups`)
+    })
+    const group = groups.data?.find(candidate => candidate.id === groupId)
+    const mutation = useMutation({
+        mutationFn: (change: { path: string, method: string, value: Record<string, unknown> }) => api<{ id?: string }>(base + change.path, {
+            method: change.method, ...jsonBody({ ...change.value, draftVersion: detail.project.draftVersion })
+        }),
+        onSuccess: (result, change) => {
+            void queryClient.invalidateQueries({ queryKey: ['server-groups', projectId] })
+            void queryClient.invalidateQueries({ queryKey: ['server', projectId] })
+            void queryClient.invalidateQueries({ queryKey: ['project', projectId] })
+            if (result.id) void navigate(`/projects/${projectId}/servers/${result.id}/settings`)
+            if (change.method === 'DELETE' && change.path.endsWith(`/${detail.server.id}`)) {
+                void navigate(`/projects/${projectId}/servers/${group!.defaultVersionId}/versions`)
+            }
+            setDeleteId(null)
+            setConfirmName('')
+        }
+    })
+    if (!group) return <ErrorNotice error={groups.error} />
+    const move = (index: number, offset: number): void => {
+        const ids = group.versions.map(version => version.id)
+        const target = index + offset
+        if (target < 0 || target >= ids.length) return
+        ;[ids[index], ids[target]] = [ids[target], ids[index]]
+        mutation.mutate({ path: '/versions/order', method: 'PUT', value: { serverIds: ids } })
+    }
+    return <>
+        <section className="card">
+            <h2>{t('versions')}</h2><p>{t('versionPublishHint')}</p>
+            <div className="server-list">
+                {group.versions.map((version, index) => <article className="version-row" key={version.id}>
+                    <div className="section-heading">
+                        <div><h3>{version.versionName}</h3><p>MC {version.minecraftVersion} · {version.forgeVersion ? `Forge ${version.forgeVersion}` : version.fabricVersion ? `Fabric ${version.fabricVersion}` : t('loaderNone')}</p></div>
+                        <div className="row-actions">
+                            {version.id === group.defaultVersionId && <span className="pill">{t('defaultVersion')}</span>}
+                            <span className="pill">{version.enabled ? t('active') : t('disabledVersion')}</span>
+                            <Link to={`/projects/${projectId}/servers/${version.id}/settings`}>{t('edit')}</Link>
+                            <Link to={`/projects/${projectId}/servers/${version.id}/files`}>{t('files')}</Link>
+                        </div>
+                    </div>
+                    {canEdit && <>
+                        <form className="actions" onSubmit={event => {
+                            event.preventDefault()
+                            const value = new FormData(event.currentTarget).get('versionName')
+                            mutation.mutate({ path: `/versions/${version.id}`, method: 'PATCH', value: { versionName: value } })
+                        }}>
+                            <label>{t('versionName')}<input name="versionName" defaultValue={version.versionName} required maxLength={128} disabled={mutation.isPending} /></label>
+                            <button className="secondary" disabled={mutation.isPending}>{t('save')}</button>
+                        </form>
+                        <div className="actions">
+                            <button className="secondary" disabled={mutation.isPending || index === 0} aria-label={t('moveServerUp', { name: version.versionName })} onClick={() => move(index, -1)}>↑</button>
+                            <button className="secondary" disabled={mutation.isPending || index === group.versions.length - 1} aria-label={t('moveServerDown', { name: version.versionName })} onClick={() => move(index, 1)}>↓</button>
+                            <button className="secondary" disabled={mutation.isPending || !version.enabled || version.id === group.defaultVersionId} onClick={() => mutation.mutate({ path: '', method: 'PUT', value: { ...group, defaultVersionId: version.id } })}>{t('setDefaultVersion')}</button>
+                            <button className="secondary" disabled={mutation.isPending || version.id === group.defaultVersionId} onClick={() => mutation.mutate({ path: `/versions/${version.id}`, method: 'PATCH', value: { enabled: !version.enabled } })}>{version.enabled ? t('disable') : t('enable')}</button>
+                            <button className="danger-button" disabled={mutation.isPending || version.id === group.defaultVersionId || group.versions.length === 1} onClick={() => { setDeleteId(version.id); setConfirmName('') }}>{t('deleteVersion')}</button>
+                        </div>
+                        {deleteId === version.id && <form className="notice" onSubmit={event => {
+                            event.preventDefault()
+                            mutation.mutate({ path: `/versions/${version.id}`, method: 'DELETE', value: { confirmName } })
+                        }}>
+                            <label>{t('confirmDeleteVersion', { name: version.versionName })}<input value={confirmName} onChange={event => setConfirmName(event.target.value)} autoFocus /></label>
+                            <div className="actions"><button className="danger-button" disabled={mutation.isPending || confirmName !== version.versionName}>{t('deleteVersion')}</button><button type="button" className="secondary" onClick={() => setDeleteId(null)}>{t('cancel')}</button></div>
+                        </form>}
+                    </>}
+                </article>)}
+            </div>
+            <ErrorNotice error={mutation.error} />
+        </section>
+        {canEdit && <section className="card">
+            <h2>{t('newVersion')}</h2>
+            <div className="form-grid">
+                <label>{t('versionName')}<input value={versionName} maxLength={128} onChange={event => setVersionName(event.target.value)} /></label>
+                <label>{t('versionSource')}<select value={sourceId} onChange={event => setSourceId(event.target.value)}><option value="">{t('blankVersion')}</option>{group.versions.map(version => <option key={version.id} value={version.id}>{version.versionName}</option>)}</select></label>
+            </div>
+            {sourceId ? <div className="actions"><button className="primary" disabled={mutation.isPending || !versionName.trim()} onClick={() => mutation.mutate({ path: '/versions', method: 'POST', value: { versionName, sourceVersionId: sourceId } })}>{t('cloneVersion')}</button></div>
+                : <ServerForm project={detail.project} group={group} versionName={versionName} canEdit={Boolean(versionName.trim()) && !mutation.isPending} onDone={id => {
+                    void queryClient.invalidateQueries({ queryKey: ['server-groups', projectId] })
+                    if (id) void navigate(`/projects/${projectId}/servers/${id}/settings`)
+                }} />}
+        </section>}
+    </>
 }
 
 export function NewServerPage({ user }: { user: ApiUser }): ReactNode {
@@ -470,11 +585,11 @@ export function ServerSettingsPage({ user }: { user: ApiUser }): ReactNode {
     const detail = useServerDetail(projectId, serverId)
     const canEdit = user.role === 'ADMIN' || user.role === 'EDITOR'
     const remove = useMutation({
-        mutationFn: () => {
+        mutationFn: (confirmName?: string) => {
             if (!detail.data) throw new Error('Server is not loaded')
-            return api(`/api/v1/projects/${projectId}/servers/${serverId}`, {
+            return api(detail.data.server.groupId ? `/api/v1/projects/${projectId}/server-groups/${detail.data.server.groupId}` : `/api/v1/projects/${projectId}/servers/${serverId}`, {
                 method: 'DELETE',
-                ...jsonBody({ draftVersion: detail.data.project.draftVersion })
+                ...jsonBody({ draftVersion: detail.data.project.draftVersion, confirmName })
             })
         },
         onSuccess: () => {
@@ -495,7 +610,7 @@ export function ServerSettingsPage({ user }: { user: ApiUser }): ReactNode {
                 project={detail.data.project}
                 server={detail.data.server}
                 canEdit={canEdit}
-                onDone={() => invalidateServer(queryClient, projectId, serverId)}
+                onDone={() => invalidateServer(queryClient, projectId)}
             />
         </section>
         {canEdit && <section className="card danger-zone">
@@ -503,7 +618,12 @@ export function ServerSettingsPage({ user }: { user: ApiUser }): ReactNode {
             <button
                 className="danger-button"
                 disabled={remove.isPending}
-                onClick={() => window.confirm(t('confirmDeleteServer')) && remove.mutate()}
+                onClick={() => {
+                    if(detail.data.server.groupId){
+                        const name = window.prompt(t('confirmDeleteGroup', { name: detail.data.server.name }))
+                        if(name === detail.data.server.name) remove.mutate(name)
+                    } else if(window.confirm(t('confirmDeleteServer'))) remove.mutate(undefined)
+                }}
             >{t('deleteServer')}</button>
             <ErrorNotice error={remove.error} />
         </section>}
@@ -694,7 +814,7 @@ export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
                 }
             )
         },
-        onSuccess: () => invalidateServer(queryClient, projectId, serverId)
+        onSuccess: () => invalidateServer(queryClient, projectId)
     })
     const storedBackground = backgroundCleared || !server
         ? null
@@ -768,8 +888,8 @@ export function ServerLauncherPage({ user }: { user: ApiUser }): ReactNode {
         <section className="card launcher-editor-card">
             <div className="section-heading">
                 <div>
-                    <h2>{t('launcherPage')}</h2>
-                    <p className="muted">{t('launcherPageHint')}</p>
+                    <h2>{t(server.groupId ? 'sharedLauncherPage' : 'launcherPage')}</h2>
+                    <p className="muted">{t(server.groupId ? 'sharedPresentationHint' : 'launcherPageHint')}</p>
                 </div>
                 {!canEdit && <span className="pill">{t('readOnly')}</span>}
             </div>
@@ -1438,7 +1558,7 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
             selectionAnchor.current = ''
         },
         onSettled: () => {
-            invalidateServer(queryClient, detail.project.id, detail.server.id)
+            invalidateServer(queryClient, detail.project.id)
         }
     })
     const downloadAction = useMutation({
@@ -2006,7 +2126,7 @@ function ServerExplorer({ detail, canEdit }: { detail: ServerDetail, canEdit: bo
                 disabled={selectedEntries.length === 0 || singleDownloadUnavailable || downloadAction.isPending}
             >{t('download')}</button>
             {canEdit && <button className="danger-link toolbar-action" onClick={remove} disabled={selectedEntries.length === 0 || action.isPending}>{t('delete')}</button>}
-            <button className="text-button toolbar-action" onClick={() => invalidateServer(queryClient, detail.project.id, detail.server.id)}>{t('refresh')}</button>
+            <button className="text-button toolbar-action" onClick={() => invalidateServer(queryClient, detail.project.id)}>{t('refresh')}</button>
         </div>
         <div className="explorer-address">
             <span>{t('location')}</span>

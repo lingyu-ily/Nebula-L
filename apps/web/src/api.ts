@@ -66,6 +66,12 @@ export interface ManagedModule {
 }
 
 export interface ManagedServer {
+    groupId?: string
+    versionName?: string
+    enabled?: boolean
+    distributionId?: string
+    defaultVersionId?: string
+    groupSortOrder?: number
     id: string
     serverKey: string
     name: string

@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto'
+import { createServerGroup, saveSharedVersionFields } from '../server-groups.js'
 import {
     launcherUiInputSchema,
     moduleInputSchema,
@@ -56,6 +57,12 @@ interface DisabledProjectRow extends ProjectRow {
 }
 
 interface ServerRow extends RowDataPacket {
+    group_id?: string
+    version_name?: string
+    enabled?: number
+    distribution_id?: string
+    default_version_id?: string
+    group_sort_order?: number
     id: string
     project_id: string
     server_key: string
@@ -134,6 +141,12 @@ function mapServer(row: ServerRow): Record<string, unknown> {
     return {
         id: row.id,
         projectId: row.project_id,
+        groupId: row.group_id ?? row.id,
+        versionName: row.version_name ?? row.server_version,
+        enabled: row.enabled == null ? true : Boolean(row.enabled),
+        distributionId: row.distribution_id ?? (row.server_key + '-' + row.minecraft_version),
+        defaultVersionId: row.default_version_id ?? row.id,
+        groupSortOrder: row.group_sort_order ?? row.sort_order,
         serverKey: row.server_key,
         name: row.name,
         description: row.description,
@@ -433,7 +446,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
             throw new HttpError(404, 'Project not found')
         }
         const [serverRows] = await getPool().execute<ServerRow[]>(
-            'SELECT * FROM servers WHERE project_id = ? ORDER BY sort_order, name, id',
+            'SELECT s.*, g.default_version_id, g.sort_order AS group_sort_order FROM servers s LEFT JOIN server_groups g ON g.id = s.group_id WHERE s.project_id = ? ORDER BY g.sort_order, s.sort_order, s.name, s.id',
             [projectId]
         )
         const stableDistributionReady = await isStableDistributionReady(
@@ -697,6 +710,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                         JSON.stringify(parsed.data.javaOptions ?? null)
                     ]
                 )
+                await createServerGroup(connection, id)
                 await replaceUntrackedRules(connection, id, parsed.data.untrackedRules)
                 await bumpProject(connection, projectId)
                 await writeAudit(connection, auditContextFromRequest(request), {
@@ -779,6 +793,14 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
             if (before.published_once && before.server_key !== parsed.data.serverKey) {
                 throw new HttpError(409, 'Published server ID is immutable')
             }
+            if (before.group_id && parsed.data.mainServer) {
+                const [groups] = await connection.query<(RowDataPacket & { default_version_id: string })[]>(
+                    'SELECT default_version_id FROM server_groups WHERE id = ? AND project_id = ?', [before.group_id, projectId]
+                )
+                if (groups[0]?.default_version_id !== serverId) {
+                    throw new HttpError(409, 'Only the default version can represent the main server')
+                }
+            }
             const [rules] = await connection.query<(RowDataPacket & { applies_to: string, pattern: string })[]>(
                 'SELECT applies_to, pattern FROM untracked_rules WHERE server_id = ?', [serverId]
             )
@@ -812,6 +834,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                     parsed.data.autoconnect, parsed.data.sortOrder, JSON.stringify(parsed.data.javaOptions ?? null), Number(fieldsChanged), serverId
                 ]
             )
+            await saveSharedVersionFields(connection, serverId, before.group_id)
             await replaceUntrackedRules(connection, serverId, parsed.data.untrackedRules)
             await bumpProject(connection, projectId)
             await writeAudit(connection, auditContextFromRequest(request), {
@@ -881,6 +904,7 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
                     serverId
                 ]
             )
+            await saveSharedVersionFields(connection, serverId, before.group_id)
             await bumpProject(connection, projectId)
             await writeAudit(connection, auditContextFromRequest(request), {
                 action: 'server.launcher_ui.updated',
@@ -907,6 +931,9 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
             const before = beforeRows[0]
             if (!before) {
                 throw new HttpError(404, 'Server not found')
+            }
+            if(before.group_id){
+                throw new HttpError(409, 'Use version management to delete a version')
             }
             await connection.execute('DELETE FROM servers WHERE id = ?', [serverId])
             await bumpServerAndProject(connection, projectId, serverId)

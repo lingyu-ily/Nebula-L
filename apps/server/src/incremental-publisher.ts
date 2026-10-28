@@ -10,7 +10,7 @@ import { getConfig } from './config.js'
 import { PermanentJobError } from './job-errors.js'
 import { PublishCache, fingerprint } from './publish-cache.js'
 import {
-    contentType, getModuleRelativePath, mapWithConcurrency, materializeSnapshot, snapshotAssetError,
+    contentType, effectiveVersionId, getModuleRelativePath, mapWithConcurrency, materializeSnapshot, snapshotAssetError,
     type ProjectSnapshot, type SnapshotModule, type SnapshotServer, type SnapshotUpload
 } from './publisher.js'
 import { downloadToFile, verifyStoredUpload } from './storage.js'
@@ -210,7 +210,8 @@ export async function buildIncrementalServer(cache: PublishCache, snapshot: Proj
             ...(server.launcherUi.rss ? { news: { rss: server.launcherUi.rss } } : {})
         }
         return {
-            id: `${server.serverKey}-${server.minecraftVersion}`, name: server.name, description: server.description,
+            id: effectiveVersionId(server),
+            ...(server.versionName ? { versionName: server.versionName, loaderLabel: server.forgeVersion ? `Forge ${server.forgeVersion}` : server.fabricVersion ? `Fabric ${server.fabricVersion}` : 'Vanilla' } : {}), name: server.name, description: server.description,
             icon: icon ?? '', version: server.serverVersion, address: server.address, minecraftVersion: server.minecraftVersion,
             ...(server.discord ? { discord: server.discord as ProjectSnapshotServerSpec['discord'] } : {}),
             mainServer: server.mainServer, autoconnect: server.autoconnect,
