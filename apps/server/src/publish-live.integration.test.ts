@@ -18,6 +18,7 @@ import { cleanupProjectStorage } from './publish-cleanup.js'
 import { withProjectStorageLock } from './project-storage-lock.js'
 import { buildProjectSnapshot, publishJob, type JobRow, type ProjectSnapshot } from './publisher.js'
 import { deleteObjectPrefix, destroyStorage, getStorageClient, readStoredJson, uploadStream } from './storage.js'
+import type { ServerDistributionReference } from './server-distribution.js'
 
 // Explicit opt-in only. Both hosts must be loopback; fixtures use a newly created
 // database and bucket, never the application's configured data or .env file.
@@ -135,11 +136,20 @@ describe.runIf(enabled)('isolated MariaDB + RustFS publishing', () => {
         const latest = await readStoredJson('public/test/distribution.json')
         expect(third.metrics).toMatchObject({ parseCacheHits: 99, objectCacheHits: 99, downloadedBytes: 15, copiedBytes: 15 })
         expect(third.metrics.s3Requests).toMatchObject({ GetObjectCommand: 1, CopyObjectCommand: 1, DeleteObjectsCommand: 1 })
-        const before = initial.value as { servers: { modules: { artifact: { url: string } }[] }[] }
-        const after = latest.value as { servers: { name: string, modules: { artifact: { url: string } }[] }[] }
-        expect(after.servers[0].name).toBe('Renamed')
-        expect(after.servers[0].modules[0].artifact.url).toBe(before.servers[0].modules[0].artifact.url)
-        expect(after.servers[0].modules[57].artifact.url).not.toBe(before.servers[0].modules[57].artifact.url)
+        const beforeIndex = initial.value as { distributionFormat: number, servers: ServerDistributionReference[] }
+        const afterIndex = latest.value as typeof beforeIndex
+        expect(beforeIndex.distributionFormat).toBe(2)
+        expect(afterIndex.servers[0].url).not.toBe(beforeIndex.servers[0].url)
+        const before = (await readStoredJson(`public/test/server-distributions/${beforeIndex.servers[0].sha256}.json`)).value as {
+            modules: { artifact: { url: string } }[]
+        }
+        const after = (await readStoredJson(`public/test/server-distributions/${afterIndex.servers[0].sha256}.json`)).value as {
+            name: string
+            modules: { artifact: { url: string } }[]
+        }
+        expect(after.name).toBe('Renamed')
+        expect(after.modules[0].artifact.url).toBe(before.modules[0].artifact.url)
+        expect(after.modules[57].artifact.url).not.toBe(before.modules[57].artifact.url)
         const [objects] = await getPool().execute<(RowDataPacket & { count: number })[]>('SELECT COUNT(*) AS count FROM published_objects')
         expect(Number(objects[0].count)).toBe(100)
         const [legacy] = await getPool().execute<RowDataPacket[]>('SELECT id FROM server_builds')

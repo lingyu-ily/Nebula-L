@@ -44,11 +44,14 @@ Published objects use this layout:
 
 ```text
 public/{distribution-slug}/distribution.json
-public/{distribution-slug}/server-builds/{server-id}/{publish-job-id}/...
+public/{distribution-slug}/server-distributions/{sha256}.json
+public/{distribution-slug}/objects/{sha256}/{content-type-hash}/payload
 private/uploads/{project-id}/...
 ```
 
-The stable `distribution.json` is replaced only after every changed server build has uploaded and passed size/SHA-256 verification. Unchanged server revisions reuse their existing build. After a successful publish, obsolete server builds are cleaned on a best-effort basis. Publish history remains available through background jobs and audit records; in-application rollback is not provided.
+The Console publishes `distributionFormat: 2`: the stable `distribution.json` retains global settings and lists ordered server references (`id`, `url`, `sha256`, `size`). Each reference points to one complete server JSON, including all modules and nested dependencies. Server JSON uses compact UTF-8 serialization; SHA-256 and size describe those exact bytes. Identical content reuses the same URL, so compatible launchers download only changed servers after their first load. A change within one server still requires that server's entire JSON.
+
+The stable index is replaced only after every server JSON has uploaded or been reused and passed size/SHA-256 metadata verification. Server manifests live outside artifact garbage collection and are not automatically removed in this version. Existing artifact reference protection and obsolete-artifact cleanup remain in place; keeping historical manifests does not provide rollback of their game files. Publish history remains available through background jobs and audit records; in-application rollback is not provided.
 
 The first publish after this upgrade builds every server; later publishes rebuild only changed server revisions. Legacy `releases`/`release_files` rows and `public/{slug}/releases/*` objects are preserved as read-only historical data. New publishes do not create or update them, and the Console no longer exposes activation or rollback endpoints.
 
@@ -60,7 +63,7 @@ Configure Helios Launcher with the stable URL, never a URL containing a publish 
 
 The management page displays this URL and verifies that the stable object's size and SHA-256 match the current publish. `/health/ready` also reports not ready if an active distribution has a missing or mismatched stable object.
 
-When adopting this layout for an existing Launcher, deploy Nebula and publish the Distribution first. Confirm that the stable URL returns HTTP `200` before releasing a Launcher build that uses it.
+Deploy a Launcher supporting format 2 **before** publishing with this Console version. The new Launcher accepts the old complete format during rollout, but old Launchers cannot read format 2. The next Console publish switches the existing stable URL; no legacy full index is emitted. The standalone Nebula generator/CLI continues to emit the upstream complete format. No database migration is required for per-server manifests.
 
 ### Anonymous Launcher usage
 

@@ -15,7 +15,10 @@ vi.mock('./publisher.js', () => ({ activatePublish: mocks.activate }))
 import { cleanupDeletedUploads, cleanupProjectStorage, reconcileManifest } from './publish-cleanup.js'
 
 const project = { id: 'project', slug: 'test', active_release_id: 'previous', stable_distribution_sha256: 'previous-sha' }
-const distribution = { version: '1.0.0', servers: [] }
+const distribution = {
+    distributionFormat: 2, version: '1.0.0',
+    servers: [{ id: 'main', url: 'https://cdn.test/public/test/server-distributions/hash.json', sha256: 'a'.repeat(64), size: 123 }]
+}
 const candidate = { job_id: 'candidate', status: 'WRITING' as const, distribution }
 const stable = { value: distribution, releaseId: 'candidate', storedSha256: 'sha', sha256: 'sha', md5: 'md5', size: 123, cacheControl: 'no-cache, must-revalidate' }
 

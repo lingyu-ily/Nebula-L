@@ -16,6 +16,7 @@ import { PermanentJobError, shouldRetryJob } from './job-errors.js'
 import { LAUNCHER_USAGE_TIME_ZONE } from './launcher-usage.js'
 import { buildIncrementalServer } from './incremental-publisher.js'
 import { PublishCache } from './publish-cache.js'
+import { publishServerDistribution, type ServerDistributionReference } from './server-distribution.js'
 import { cleanupProjectStorage, commitManifest, reconcileManifest } from './publish-cleanup.js'
 import { createPublishMetrics, withPublishMetrics, type PublishMetrics } from './publish-metrics.js'
 import { ProjectStorageBusyError, withProjectStorageLock } from './project-storage-lock.js'
@@ -867,7 +868,9 @@ export function selectReusableServerBuilds(
     return { reused, dirtyServerIds }
 }
 
-export interface PublishedDistribution extends Distribution {
+export interface PublishedDistribution extends Omit<Distribution, 'servers'> {
+    distributionFormat: 2
+    servers: ServerDistributionReference[]
     telemetry: {
         anonymousDailyActive: {
             endpoint: string
@@ -980,12 +983,14 @@ export async function publishJob(job: JobRow): Promise<void> {
             const cache = new PublishCache(snapshot.id, snapshot.slug, job.id, metrics)
             await cache.load()
             await heartbeat(job.id, 5)
-            const servers: Distribution['servers'] = []
+            const servers: ServerDistributionReference[] = []
             for (let index = 0; index < snapshot.servers.length; index++) {
-                servers.push(await buildIncrementalServer(cache, snapshot, snapshot.servers[index]))
+                const server = await buildIncrementalServer(cache, snapshot, snapshot.servers[index])
+                servers.push(await publishServerDistribution(snapshot.slug, server))
                 await heartbeat(job.id, 10 + Math.floor((index + 1) / snapshot.servers.length * 70))
             }
             const distribution: PublishedDistribution = {
+                distributionFormat: 2,
                 version: '1.0.0', rss: snapshot.rss,
                 ...(snapshot.discord ? { discord: snapshot.discord as Distribution['discord'] } : {}),
                 telemetry: buildLauncherTelemetry(getConfig().appBaseUrl, snapshot.slug), servers

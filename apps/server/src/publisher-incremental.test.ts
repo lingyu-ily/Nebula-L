@@ -4,7 +4,7 @@ import type { JobRow, ProjectSnapshot } from './publisher.js'
 
 const mocks = vi.hoisted(() => ({
     execute: vi.fn(), query: vi.fn(), audit: vi.fn(), build: vi.fn(), put: vi.fn(), verify: vi.fn(),
-    commit: vi.fn(), cleanup: vi.fn(), reconcile: vi.fn()
+    commit: vi.fn(), cleanup: vi.fn(), reconcile: vi.fn(), shard: vi.fn()
 }))
 vi.mock('./db/index.js', () => ({
     getPool: (): unknown => ({ execute: mocks.execute }),
@@ -19,7 +19,10 @@ vi.mock('./audit.js', () => ({ writeAudit: mocks.audit }))
 vi.mock('./config.js', () => ({ getConfig: (): unknown => ({ appBaseUrl: 'https://nebula.test', rustfs: { publicBaseUrl: 'https://cdn.test' } }) }))
 vi.mock('./incremental-publisher.js', () => ({ buildIncrementalServer: mocks.build }))
 vi.mock('./publish-cleanup.js', () => ({ commitManifest: mocks.commit, cleanupProjectStorage: mocks.cleanup, reconcileManifest: mocks.reconcile }))
-vi.mock('./storage.js', async () => ({ ...await vi.importActual<typeof import('./storage.js')>('./storage.js'), putJson: mocks.put }))
+vi.mock('./storage.js', async () => ({
+    ...await vi.importActual<typeof import('./storage.js')>('./storage.js'),
+    putJson: mocks.put, putImmutableJson: mocks.shard
+}))
 vi.mock('./stable-distribution.js', () => ({
     getStableDistributionKey: (slug: string): string => `public/${slug}/distribution.json`,
     STABLE_CACHE_CONTROL: 'no-cache, must-revalidate', assertStableDistribution: mocks.verify
@@ -47,6 +50,7 @@ beforeEach(() => {
         return { id: 'survival-1.20.1', name: frozen.servers[0].name, modules: [] }
     })
     mocks.put.mockResolvedValue(stable)
+    mocks.shard.mockResolvedValue(undefined)
     mocks.verify.mockResolvedValue(undefined)
     mocks.commit.mockResolvedValue(undefined)
     mocks.cleanup.mockResolvedValue(undefined)
@@ -61,9 +65,40 @@ describe('incremental publish activation', () => {
         expect(mocks.execute.mock.invocationCallOrder[writing]).toBeLessThan(mocks.put.mock.invocationCallOrder[0])
         const result = mocks.execute.mock.calls.find(([sql]) => String(sql).startsWith('UPDATE jobs SET status = \'SUCCEEDED\''))
         expect(JSON.parse(String(result?.[1]?.[0]))).toMatchObject({ releaseRevision: 4, currentPublishId: 'job', metrics: { parseCacheHits: 0, s3Requests: {} } })
-        expect(mocks.put.mock.calls[0]?.[1]).toMatchObject({ servers: [{ name: 'Frozen name' }] })
+        const index = mocks.put.mock.calls[0]?.[1] as { distributionFormat: number, servers: { id: string, url: string, sha256: string, size: number }[] }
+        expect(index.distributionFormat).toBe(2)
+        expect(index.servers).toHaveLength(1)
+        expect(index.servers[0].id).toBe('survival-1.20.1')
+        expect(index.servers[0].url).toContain('/server-distributions/')
+        expect(index.servers[0].sha256).toMatch(/^[a-f0-9]{64}$/)
+        expect(index.servers[0].size).toBeGreaterThan(0)
+        expect(JSON.parse((mocks.shard.mock.calls[0]?.[1] as Buffer).toString())).toMatchObject({ name: 'Frozen name', modules: [] })
+        expect(mocks.shard.mock.invocationCallOrder[0]).toBeLessThan(mocks.put.mock.invocationCallOrder[0])
+        expect(JSON.parse(String(mocks.execute.mock.calls[writing]?.[1]?.[0]))).toEqual(mocks.put.mock.calls[0]?.[1])
         expect(mocks.verify.mock.invocationCallOrder[0]).toBeLessThan(mocks.commit.mock.invocationCallOrder[0])
         expect(mocks.cleanup).toHaveBeenCalledWith('project')
+    })
+
+    it('does not write the stable index or activate when a server manifest cannot be verified', async () => {
+        mocks.shard.mockRejectedValue(new Error('Server manifest verification failed'))
+        await expect(publishJob(job)).rejects.toThrow('Server manifest verification failed')
+        expect(mocks.put).not.toHaveBeenCalled()
+        expect(mocks.commit).not.toHaveBeenCalled()
+        expect(mocks.cleanup).not.toHaveBeenCalled()
+        expect(mocks.execute.mock.calls.some(([sql]) => String(sql).includes('status = \'WRITING\''))).toBe(false)
+    })
+
+    it('keeps snapshot server order in the index and uploads every shard before the stable write', async () => {
+        mocks.build.mockImplementation(async (_cache: PublishCache, _snapshot: ProjectSnapshot, server: ProjectSnapshot['servers'][number]) =>
+            ({ id: server.serverKey, name: server.name, modules: [] }))
+        await publishJob({ ...job, snapshot: { ...snapshot, servers: [
+            { ...snapshot.servers[0], serverKey: 'second' },
+            { ...snapshot.servers[0], id: 'other', serverKey: 'first', mainServer: false }
+        ] } })
+        const index = mocks.put.mock.calls[0]?.[1] as { servers: { id: string }[] }
+        expect(index.servers.map(server => server.id)).toEqual(['second', 'first'])
+        expect(mocks.shard).toHaveBeenCalledTimes(2)
+        expect(Math.max(...mocks.shard.mock.invocationCallOrder)).toBeLessThan(mocks.put.mock.invocationCallOrder[0])
     })
 
     it('retains references when the stable PUT result is ambiguous', async () => {

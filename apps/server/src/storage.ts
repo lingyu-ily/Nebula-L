@@ -393,6 +393,48 @@ export async function putJson(
     metadata: Record<string, string> = {}
 ): Promise<StoredObject> {
     const body = Buffer.from(JSON.stringify(value, null, 2))
+    return putJsonBytes(objectKey, body, cacheControl, metadata)
+}
+
+export const IMMUTABLE_JSON_CACHE_CONTROL = 'public, max-age=31536000, immutable'
+
+// Server manifests live outside the published-object GC registry. Historical
+// manifests remain available to clients that already fetched an older index.
+export async function putImmutableJson(objectKey: string, body: Buffer): Promise<StoredObject> {
+    const expected = {
+        size: body.length,
+        md5: createHash('md5').update(body).digest('hex'),
+        sha256: createHash('sha256').update(body).digest('hex'),
+        cacheControl: IMMUTABLE_JSON_CACHE_CONTROL
+    }
+    try {
+        // One probe: a new content hash normally does not exist yet.
+        const head = await getStorageClient().send(new HeadObjectCommand({
+            Bucket: getConfig().rustfs.bucket, Key: objectKey
+        }))
+        if (storedObjectMetadataMatches({
+            contentLength: head.ContentLength,
+            md5: head.Metadata?.md5,
+            sha256: head.Metadata?.sha256,
+            cacheControl: head.CacheControl,
+            releaseId: undefined
+        }, expected)) {
+            return { objectKey, size: expected.size, md5: expected.md5, sha256: expected.sha256 }
+        }
+    } catch (error) {
+        if (!isNoSuchKeyError(error)) throw error
+    }
+    // Repair missing/corrupt objects with the same deterministic bytes, and
+    // verify the completed PUT before any stable index may reference it.
+    return putJsonBytes(objectKey, body, IMMUTABLE_JSON_CACHE_CONTROL)
+}
+
+async function putJsonBytes(
+    objectKey: string,
+    body: Buffer,
+    cacheControl: string,
+    metadata: Record<string, string> = {}
+): Promise<StoredObject> {
     const md5 = createHash('md5').update(body).digest('hex')
     const sha256 = createHash('sha256').update(body).digest('hex')
     await getStorageClient().send(new PutObjectCommand({
